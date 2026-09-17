@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="LwAPXtbbjxitbsrbcubF9H">
+<head data-page-node-id="6J9qV4p2SjSiHoaLoh7WnD">
+<meta charset="utf-8" data-page-node-id="FFNGggcvrlBxHowUFqSwOh" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src http: https: file:" data-page-node-id="LvKxhXvz6d4if8AUZpG5wq" />
+<title>One Harness</title>
+<link rel="stylesheet" href="styles.css" data-page-node-id="3Ly8Pbg4Xdjlze7fXVxzfX" />
+</head>
+<body data-page-node-id="CJTx2oCp6LHCqAhVc76nj1">
+<div class="app" id="app-root" data-page-node-id="ouE8u0lBFKRduOsVTLlfCx">
+
+  <!-- 左栏：自带顶栏（拖拽区），下面是项目树 -->
+  <aside class="side left" id="side-left" data-page-node-id="IK3f9BOsLgrAWAKUn2qLdd">
+    <div class="bar" data-page-node-id="ZvGiPSEweQC9VDLgrNN1Ap">
+      <button id="btn-toggle-left" class="ic-btn" title="收起侧栏" data-ic="panel-left" data-page-node-id="NytANSgdQAAbz41LgVKL0Q"></button>
+      <div class="grow" data-page-node-id="iw9P57b366AJr1qHjkvSiA"></div>
+      <button id="btn-tab-new" class="ic-btn" title="新建会话" data-ic="compose" data-page-node-id="h4RShwH5PDszyyHoAJP3Ik"></button>
+    </div>
+
+    <div class="tree-wrap" data-page-node-id="W87VyJzateOt6YQdNDK7Vp">
+      <!-- 品牌区：应用名 + 标语，放在「项目」栏上面（用户要的位置）。
+           跟树同处一个滚动容器，滚动时一起走，不会悬在半空。 -->
+      <div class="brand" data-page-node-id="BrandBlock00000001">
+        <div class="brand-name" data-page-node-id="BrandName000000001">One Harness</div>
+        <div class="brand-slogan" data-page-node-id="BrandSlogan0000001">风远偕来，途遥共赴</div>
+      </div>
+      <div class="section-title" data-page-node-id="gXFMLeCxgM7PpfCkcW7j2f">项目</div>
+      <div class="node muted" id="btn-new-project" title="新建项目" data-page-node-id="lGzC8YX8fNCBzcpFxCtHtJ">
+        <span class="ic" data-ic="plus" data-page-node-id="b3hCtWSfSDEMHfg5mnvRcH"></span><span class="nm" data-page-node-id="CEjnDqHerqwQOhPChlwp73">新建项目</span>
+      </div>
+      <div id="project-tree" data-page-node-id="WAYHNN9BSOro7ic7x1T5vT"></div>
+    </div>
+
+    <div class="side-footer" data-page-node-id="jbxBwQnpKn0sUFxsALR1Fw">
+      <div class="side-foot-row" id="btn-open-settings" data-page-node-id="YLHNPLVapW7vZbqnlsgnEZ">
+        <span class="ic" data-ic="gear" data-page-node-id="cXUNYEgZnPfZg1Jryh20Gg"></span><span data-page-node-id="hAhZZEHhJoAGy3pXAZ0zve">设置</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="splitter" id="split-left" title="拖动调整左栏宽度（双击折叠）" data-page-node-id="rQSWuueu7NAaxTeCfRAWiv"></div>
+
+  <!-- 顶栏：会话标签（跨主区与右栏，窗口按钮才贴得住最右边） -->
+  <div class="tabstrip" data-page-node-id="xAwNyEPLuoskK1cuu8TY5H">
+    <!-- 左栏收起后的「展开」入口。它必须待在侧栏**外面**：收起时 #side-left 整体
+         visibility:hidden + pointer-events:none，放在里面的按钮会跟着一起消失，
+         用户就再也点不回来了（重启也没用，收起状态是持久化的）。 -->
+    <button id="btn-open-left" class="ic-btn rail-btn" title="展开侧栏" data-ic="panel-left" data-page-node-id="NytANSgdQAAbz41LgVKL1A"></button>
+    <!-- 设置入口兜底：左栏收起时 #side-left 整块 visibility:hidden，里面那个「设置」会跟着消失。
+         设置只有那一个入口，所以收起时在标签栏上补一个（同一套 .rail-btn，只在收起态显示）。
+         这不是照搬 Bionic 的发明，是"入口不能因为主容器收起而消失"那条教训的直接后果。 -->
+    <button id="btn-open-settings-rail" class="ic-btn rail-btn" title="设置" data-ic="gear" data-page-node-id="SetRailBtn00000001"></button>
+    <div class="stab-list" id="session-tabs" data-page-node-id="TTWWhue2GWCE9Rf2v2pUip"></div>
+    <div class="spacer" data-page-node-id="YWPjJXV2AlEdHhVaRENU8l"></div>
+    <button id="btn-toggle-right" class="ic-btn" title="展开 / 收起右栏" data-ic="panel-right" data-page-node-id="68fcMdPrExeZAGkviBa3iZ"></button>
+    <div class="win-btns" data-page-node-id="3mxHObNOQvLU5ZV9V4G3qA">
+      <button class="win-btn" id="win-min" title="最小化" data-ic="win-min" data-page-node-id="9Gks4nPa1RG9vFtOblIUGG"></button>
+      <button class="win-btn" id="win-max" title="最大化 / 还原" data-ic="win-max" data-page-node-id="jGGyfjnpEGA7iDnqufv6OO"></button>
+      <button class="win-btn close" id="win-close" title="关闭" data-ic="win-close" data-page-node-id="gBzKTIPO1pisBiJ8yUrX5F"></button>
+    </div>
+  </div>
+
+  <!-- 主区 -->
+  <div id="main-col" data-page-node-id="NAwHVmNE8V3yQYI7SPNuic">
+    <div class="banner hidden" id="banner" data-page-node-id="BQiN8EXWDeeQQOgHS3dUzq">
+      <span id="banner-text" data-page-node-id="Soh31lXKZQFVtZyK4GGAjx"></span>
+      <div class="spacer" style="flex:1" data-page-node-id="Szw1Gd3IrJzPxRiAGncuGF"></div>
+      <button id="banner-action" class="ghost" data-page-node-id="uFlvRNIlv0b3BTGIZQlJ3O">处理</button>
+      <button id="banner-close" class="ghost" data-page-node-id="ZvLlqozVBvCgZHq95HJ8YL">忽略</button>
+    </div>
+
+    <div class="transcript" id="transcript" data-page-node-id="WtzBBpVr1Dkso9h0lwwjYB"></div>
+
+    <div class="composer" data-page-node-id="F6MEE5GyQhHV6uhC4nGM0y">
+      <div class="composer-box" data-page-node-id="sZLHC8S9zPMNtEDhlMJ1bI">
+        <textarea id="input" rows="2" placeholder="让 One Harness 帮你完成任务" title="Enter 发送，Shift+Enter 换行"></textarea>
+        <div class="composer-actions" data-page-node-id="FwFg4q9R7cnI9mOTCu1FxD">
+          <div style="position:relative;display:flex" data-page-node-id="veLzYTtq11SfEHQQMQznSJ">
+            <button id="btn-plus" class="round-btn" title="新建会话" data-ic="plus" data-page-node-id="Tcb1GAGzlGIDwVWExSYu4l"></button>
+            <div class="pop hidden" id="new-session-menu" data-page-node-id="G1ToDpoMjfzVHSj7jyYGdC"></div>
+          </div>
+
+          <!-- 审批模式：触发器自绘 + 自绘浮层。
+               原来是一个透明原生 <select> 盖在图标按钮上——点开的选项列表由**系统**绘制，
+               样式完全不受控（而且弹的位置和观感跟应用其他地方不是一套）。
+               现在触发器只负责"显示当前模式 + 点开"，列表由 .sel-pop 自绘。 -->
+          <button id="approval-select" class="round-btn" title="审批模式（只改当前会话）" aria-haspopup="listbox" aria-expanded="false" data-ic="shield" data-page-node-id="MwVnPxOHDaCSH0Eg6psROY"></button>
+
+          <div class="spacer" data-page-node-id="Rd6O1c0MCpTVEJy7ZDHbrx"></div>
+
+          <button class="model-chip" id="model-select" title="模型" aria-haspopup="listbox" aria-expanded="false" data-page-node-id="oyo25npChQnBBAQ1KBAYe7">
+            <span class="ic" data-ic="chip" data-page-node-id="mzvUqD8H7zJ6c1ConkDgFz"></span>
+            <span class="m-name" id="model-name" data-page-node-id="RIkmi5o4fy2KkbyccxfVNi">未连接</span>
+            <span class="ic chev" data-ic="chevron" data-page-node-id="ModChipChev0000001"></span>
+          </button>
+
+          <button id="btn-stop" class="round-btn hidden" title="停止" data-ic="stop" data-page-node-id="lY5HuxX8pSlAhzkXd41ss7"></button>
+          <button id="btn-send" class="round-btn send" title="发送" data-ic="arrow-up" data-page-node-id="5g6f1Atu91oGmHnyMweivx"></button>
+        </div>
+      </div>
+      <!-- 这一行只留「会话标签 + 上下文用量」。
+           原先左边还有个当前项目名——它跟左栏项目树重复（那边当前项目是高亮的），
+           撤掉后把 54px 让给用量明细，这一行在 1118 宽的窗口里才放得下。 -->
+      <div class="composer-meta" data-page-node-id="fX1p9VKK56nhFHPueKItpp">
+        <span class="pills-row" id="session-pills" data-page-node-id="sgt3yj445wsnDzgHH1No3X"></span>
+        <div class="spacer" data-page-node-id="dK6ucFRDAJdFHaHDDDCiIX"></div>
+        <span class="usage" id="usage-hint" data-page-node-id="NoO2lmCWf7Nbaoy4422wEU"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="splitter" id="split-right" title="拖动调整右栏宽度（双击折叠）" data-page-node-id="r6hDvgSUJ0VK8G93kt58MY"></div>
+
+  <aside class="side right" id="side-right" data-page-node-id="xgVTHItWgNkdjq4VyhdDs9">
+    <div class="tabs" data-page-node-id="1bF8nA3BEWILGS0VfibgEX">
+      <div class="tab active" data-tab="browser" data-page-node-id="TabBrowser000000001">浏览器</div>
+      <div class="tab" data-tab="files" data-page-node-id="VblUFd6pTeCiJf7dGIcOZW">文件</div>
+      <div class="tab" data-tab="skills" data-page-node-id="xyCkqYmhumGi39KOynisMg">技能</div>
+      <div class="tab" data-tab="tools" data-page-node-id="vjdo1wM6PdAXV2pU6kgzO2">工具</div>
+      <div class="grow" data-page-node-id="lSAeMKOjDzPklXlCcl9mpw"></div>
+      <button id="btn-close-right" class="ic-btn" title="收起右栏" data-ic="x" data-page-node-id="cbCriuYauMq5NRZkXIUqG0"></button>
+    </div>
+    <!-- 浏览器：内置的预览窗口（照 Bionic 的右栏）——生成 HTML 后能直接看效果。
+         地址栏 + 后退/前进/刷新 + 在系统浏览器打开。 -->
+    <div class="panel" id="panel-browser" data-page-node-id="PanelBrowser000001">
+      <div class="bw-bar" data-page-node-id="BwBar0000000000001">
+        <button class="ic-btn sm" id="bw-back" title="后退" data-ic="arrow-left" data-page-node-id="BwBack00000000001"></button>
+        <button class="ic-btn sm" id="bw-fwd" title="前进" data-ic="arrow-right" data-page-node-id="BwFwd000000000001"></button>
+        <button class="ic-btn sm" id="bw-reload" title="刷新" data-ic="refresh" data-page-node-id="BwReload000000001"></button>
+        <input id="bw-url" type="text" spellcheck="false" autocomplete="off"
+               placeholder="输入地址或本地文件路径，回车打开" data-page-node-id="BwUrl000000000001" />
+        <button class="ic-btn sm" id="bw-open" title="在系统浏览器打开" data-ic="external" data-page-node-id="BwOpen00000000001"></button>
+      </div>
+      <div class="bw-stage" id="bw-stage" data-page-node-id="BwStage0000000001">
+        <div class="empty" id="bw-empty">还没有打开的页面。<br>地址栏输入网址，或在会话里点一个 HTML 文件名。</div>
+      </div>
+    </div>
+    <div class="panel hidden" id="panel-files" data-page-node-id="z722RG62ej1LEA970yXqPV">
+      <!-- 两个独立容器，别让它们互相覆盖：
+           #viewer-host 放带行号的文本视图（打开文件时出现），#files-list 放改动记录列表。
+           以前两者共用 panel 的 innerHTML，renderFiles() 每次都把整块清空 ——
+           结果就是"点文件名后行号视图一闪就没"（用户报的"行号也没了"）。 -->
+      <div id="viewer-host" data-page-node-id="ViewerHost00000001"></div>
+      <div id="files-list" data-page-node-id="FilesList000000001"></div>
+    </div>
+    <div class="panel hidden" id="panel-skills" data-page-node-id="eZYSYOmyfW2l4qYlOIm91U"></div>
+    <div class="panel hidden" id="panel-tools" data-page-node-id="sE6BitSEQbxM9bxfqrV62Y"></div>
+  </aside>
+</div>
+
+<div class="modal-backdrop hidden" id="approval-modal" data-page-node-id="bGfVsHgZbmUMkIC6HDVNlt">
+  <div class="modal" data-page-node-id="oWO7WLQPFNNuomeEKsGzSt">
+    <h3 id="approval-title" data-page-node-id="D9w0yJ4RvEE7eO6ivFR7sL">需要确认</h3>
+    <div class="sub" id="approval-sub" data-page-node-id="j6HkHFaF2AwdPCNU3KFcb9"></div>
+    <pre class="cmd" id="approval-cmd" data-page-node-id="f4KqJYlQ9GBsBdsHolIJ2A"></pre>
+    <div class="verdict" id="approval-verdict" data-page-node-id="xyfz7t1PnjZDJgOgcs80Ug"></div>
+    <div class="field" data-page-node-id="nJQAQnYyiVrUpaOR5fL2O2">
+      <label for="approval-note" data-page-node-id="MBzGLq8JTCYue7DBGl9P5r">拒绝或批准的理由（可选，会传给模型）</label>
+      <textarea id="approval-note" rows="2"></textarea>
+    </div>
+    <div class="actions" data-page-node-id="Ump9jzaraTNt1DxDTjZzEk">
+      <button id="approval-deny" class="danger" data-page-node-id="qv7ZD1KTUmlNqD7cfIr6E2">拒绝</button>
+      <button id="approval-allow" data-page-node-id="w44mHS9oY6a2WkDnMqOC8F">允许一次</button>
+      <button id="approval-always" class="primary" data-page-node-id="ImrS8GaJPu5F5ikrDeyBUH">本会话全部放行</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="project-modal" data-page-node-id="PrjMod1Backdrop000001">
+  <div class="modal slim" data-page-node-id="PrjMod1Dialog00000001">
+    <h3 data-page-node-id="PrjMod1Title000000001">新建项目</h3>
+    <div class="sub" id="project-dir" data-page-node-id="PrjMod1DirLabel000001"></div>
+    <div class="field" data-page-node-id="PrjMod1Field000000001">
+      <label for="project-name-input" data-page-node-id="PrjMod1NameLabel00001">项目名称</label>
+      <input id="project-name-input" type="text" maxlength="60" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="actions" data-page-node-id="PrjMod1Actions0000001">
+      <button id="project-cancel" class="ghost" data-page-node-id="PrjMod1CancelBtn00001">取消</button>
+      <button id="project-create" class="primary" data-page-node-id="PrjMod1CreateBtn00001">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认框（删除项目这类有副作用、需要用户点头的动作走这里）。
+     为什么不用 window.confirm：Electron 渲染层禁用了原生 prompt/confirm，调了直接抛。 -->
+<div class="modal-backdrop hidden" id="confirm-modal" data-page-node-id="CnfMod1Backdrop000001">
+  <div class="modal slim" data-page-node-id="CnfMod1Dialog00000001">
+    <h3 id="confirm-title" data-page-node-id="CnfMod1Title000000001">确认</h3>
+    <div class="sub" id="confirm-text" data-page-node-id="CnfMod1Text000000001"></div>
+    <!-- 可选的一行「位置：<路径>（点这里打开文件夹）」——删除项目这种要告诉用户"东西在哪"的动作用它 -->
+    <div class="sub loc-row hidden" id="confirm-loc-row" data-page-node-id="CnfMod1LocRow0000001">
+      <span id="confirm-loc-label" data-page-node-id="CnfMod1LocLabel00001">位置：</span>
+      <button type="button" class="link" id="confirm-loc" data-page-node-id="CnfMod1LocBtn0000001"></button>
+    </div>
+    <div class="actions" data-page-node-id="CnfMod1Actions0000001">
+      <button id="confirm-cancel" class="ghost" data-page-node-id="CnfMod1CancelBtn00001">取消</button>
+      <button id="confirm-ok" class="danger" data-page-node-id="CnfMod1OkBtn00000001">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置模态框。Bionic 是点左下角「设置」把**整个页面**切走（路由 /settings，自带一条分类栏）；
+     这里按用户要求改成模态框，但左栏分组/分区命名照 Bionic 的分区表来。 -->
+<div class="modal-backdrop hidden" id="settings-modal" data-page-node-id="SetModal1Backdrop01">
+  <div class="modal settings-modal" data-page-node-id="SetModal1Dialog0001">
+    <div class="set-head" data-page-node-id="SetModal1Head000001">
+      <h3 data-page-node-id="SetModal1Title00001">设置</h3>
+      <div class="spacer" style="flex:1" data-page-node-id="SetModal1Spacer0001"></div>
+      <button id="settings-close" class="ic-btn" title="关闭" data-ic="x" data-page-node-id="SetModal1Close00001"></button>
+    </div>
+    <div class="set-body" data-page-node-id="SetModal1Body000001">
+      <nav class="set-nav" id="settings-nav" data-page-node-id="SetModal1Nav0000001"></nav>
+      <div class="set-content" id="settings-content" data-page-node-id="SetModal1Content01"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toasts" data-page-node-id="osx9zg3mBbwv9FW89W3JWk"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

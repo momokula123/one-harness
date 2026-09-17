@@ -1,0 +1,36 @@
+# ---- 依赖与缓存 ----
+node_modules/
+.npm-cache/
+
+# ---- 运行期数据：**绝对不要提交** ----
+# data/ 里是使用者的真实数据：会话记录（含对话全文）、检查点快照、任务记录、
+# 布局状态、以及 projects.json 里的**本地工作目录路径**（可能含用户名等个人信息）。
+# 每条会话都是完整的对话历史，推到公开仓库等于把用户的对话公开。
+# 这个目录由应用自己创建，删掉不影响运行（下次启动会重建）。
+data/
+logs/
+
+# ---- 测试产生的临时物 ----
+test/.tmp/
+test/.tmp-*/
+test/.shots/
+test/*.log
+test/.tmp-ui/
+test/.tmp-mouse/
+test/.tmp-launch/
+test/.tmp-repro/
+test/.tmp-approval-mode/
+
+# ---- 本地启动脚本：只给本机双击用，不进仓库 ----
+# start.cmd → launch.vbs → launch.js 这条链是为了"双击启动且不出控制台黑框"，
+# 依赖本机的 wscript/node 路径，对别人没意义（别人 clone 下来用 npm start）。
+launch.js
+launch.vbs
+start.cmd
+
+# ---- 编辑器/系统 ----
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

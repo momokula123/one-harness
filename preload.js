@@ -1,0 +1,95 @@
+'use strict';
+// 上下文隔离下的安全桥：渲染层只能看到下面这些方法
+const { contextBridge, ipcRenderer } = require('electron');
+
+const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
+
+contextBridge.exposeInMainWorld('hatch', {
+  boot: () => invoke('app:boot'),
+  settings: {
+    get: () => invoke('settings:get'),
+    save: (patch) => invoke('settings:save', patch),
+  },
+  models: { list: (override) => invoke('models:list', override) },
+  projects: {
+    list: () => invoke('projects:list'),
+    create: (input) => invoke('projects:create', input),
+    update: (input) => invoke('projects:update', input),
+    pickFolder: () => invoke('projects:pickFolder'),
+    // 删除是"只摘索引"：从项目列表里移除，磁盘记录与工作目录都不动
+    remove: (input) => invoke('projects:delete', input),
+    deleteInfo: (input) => invoke('projects:deleteInfo', input),
+  },
+  sessions: {
+    list: (projectId) => invoke('sessions:list', projectId),
+    create: (input) => invoke('sessions:create', input),
+    load: (input) => invoke('sessions:load', input),
+    rename: (input) => invoke('sessions:rename', input),
+    update: (input) => invoke('sessions:update', input),
+    remove: (input) => invoke('sessions:delete', input),
+    fork: (input) => invoke('sessions:fork', input),
+  },
+  chat: {
+    send: (input) => invoke('chat:send', input),
+    stop: (input) => invoke('chat:stop', input),
+  },
+  approvals: {
+    answer: (input) => invoke('approval:answer', input),
+  },
+  checkpoints: {
+    list: (projectId) => invoke('checkpoints:list', projectId),
+    rollback: (input) => invoke('checkpoints:rollback', input),
+    revertFile: (input) => invoke('checkpoints:revertFile', input),
+  },
+  skills: {
+    list: () => invoke('skills:list'),
+    read: (name) => invoke('skills:read', name),
+    save: (input) => invoke('skills:save', input),
+    openDir: () => invoke('skills:openDir'),
+  },
+  fs: {
+    readText: (input) => invoke('fs:readText', input),
+  },
+  // 无边框窗口的自绘按钮
+  win: {
+    minimize: () => invoke('win:minimize'),
+    toggleMaximize: () => invoke('win:toggleMaximize'),
+    close: () => invoke('win:close'),
+    isMaximized: () => invoke('win:isMaximized'),
+    onStateChange: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on('win:state', handler);
+      return () => ipcRenderer.removeListener('win:state', handler);
+    },
+  },
+  // 布局状态（ui-state/*.json 的读写口）
+  ui: {
+    state: () => invoke('ui:state'),
+    patch: (patch) => invoke('ui:patch', patch),
+    patchGlobal: (patch) => invoke('ui:patchGlobal', patch),
+    reset: () => invoke('ui:reset'),
+  },
+  shell: {
+    openPath: (p) => invoke('shell:openPath', p),
+    showItem: (p) => invoke('shell:showItem', p),
+    openDataDir: () => invoke('app:openDataDir'),
+  },
+  events: {
+    onAgentEvent: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on('agent:event', handler);
+      return () => ipcRenderer.removeListener('agent:event', handler);
+    },
+    onApprovalRequest: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on('approval:request', handler);
+      return () => ipcRenderer.removeListener('approval:request', handler);
+    },
+    // 内置浏览器里点 target=_blank 时，主进程把地址回推给渲染层（见 main.js 的 setWindowOpenHandler）
+    onBrowserNavigate: (cb) => {
+      const handler = (_e, url) => cb(url);
+      ipcRenderer.on('browser:navigate', handler);
+      return () => ipcRenderer.removeListener('browser:navigate', handler);
+    },
+  },
+});
