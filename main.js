@@ -14,8 +14,13 @@ const { listPrograms, MODULES, PROMPTS, getProgram } = require('./core/prompts')
 const skillsMod = require('./core/tools/skills');
 const model = require('./core/model');
 const uistate = require('./core/uistate');
+const runlog = require('./core/runlog');
 
 store.init();
+
+// 运行日志：把一轮对话里的模型请求 / 工具调用 / 中断 / 报错落到 logs/run-YYYY-MM-DD.log。
+// 必须在 agent 建起来之前 init（agent 的事件处理里会写日志）。
+runlog.init({ dataDir: store.DATA_DIR, packaged: app.isPackaged });
 
 // 绿色版：把 Chromium 自己的 userData（缓存 / Local Storage / GPU 缓存等）也塞进程序文件夹，
 // 否则它会写到 %APPDATA%/One Harness —— 那样"拷走文件夹"就不算真的自包含。
@@ -62,6 +67,8 @@ const pendingApprovals = new Map();
 
 const agent = new Agent({
   getSettings: () => store.getSettings(),
+  // 这里只管把事件送到界面。运行日志由内核自己记（core/agent.js 的 logCoreEvent +
+  // 模型/工具执行点），不再由宿主转发 —— 日志是出事后的唯一依据，不该依赖宿主。
   emit: (ev) => {
     if (win && !win.isDestroyed()) win.webContents.send('agent:event', ev);
   },
@@ -742,7 +749,9 @@ function registerIpc() {
     // 登记这份对象（见 liveSessions）：本轮跑着的时候，sessions:update 要能找到它、就地改，
     // 否则运行中切审批模式只会改到磁盘上那份，本轮读的还是老值。
     liveSessions.set(liveKey(projectId, sessionId), s);
+    runlog.turn({ phase: 'request', sessionId, projectId, model: (store.getSettings().model || {}).model, chars: String(body || '').length, text: String(body || '').slice(0, 200) });
     agent.runTurn(s).catch((e) => {
+      runlog.log('turn.failed', { sessionId: s.id, error: reasonOf(e), stack: (e && e.stack || '').split('\n').slice(0, 4).join(' | ') });
       if (!win || win.isDestroyed()) return;
       win.webContents.send('agent:event', { type: 'log', sessionId: s.id, message: '本轮异常：' + e.message });
       // runTurn 有"连 try 都没进就抛"的路径（同会话重入：'这个会话正在运行中。'），
@@ -760,7 +769,11 @@ function registerIpc() {
     });
     return { started: true, meta: sessionMeta(s), transcript: sessionLib.renderTranscript(s) };
   });
-  ipcMain.handle('chat:stop', (_e, { sessionId }) => agent.stop(sessionId));
+  ipcMain.handle('chat:stop', (_e, { sessionId }) => {
+    const ok = agent.stop(sessionId);
+    runlog.log('turn.stop', { sessionId, hit: ok });
+    return ok;
+  });
 
   ipcMain.handle('approval:answer', (_e, { requestId, approved, note, always }) => {
     const resolve = pendingApprovals.get(requestId);

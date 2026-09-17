@@ -17,6 +17,7 @@ const checkpoints = require('../core/checkpoints');
 const { Agent } = require('../core/agent');
 const approvals = require('../core/approvals');
 const tools = require('../core/tools');
+const runlog = require('../core/runlog');
 const { classifyCommand } = require('../core/tools/shell');
 
 let pass = 0;
@@ -123,6 +124,11 @@ async function main() {
     approval: { mode: 'auto' },
   });
 
+  // 运行日志：冒烟里也真开一份（默认不 init 就是关的），这样"整轮对话该产出哪些日志行"
+  // 有断言兜底 —— 免得哪天埋点被误删，又要等出事时才发现没记录。日志写到 TMP 下，不碰仓库 logs/。
+  const RUNLOG_DIR = path.join(TMP, 'logs');
+  runlog.init({ dataDir: path.join(TMP, 'data'), logDir: RUNLOG_DIR });
+
   console.log('1) 数据层');
   const project = store.createProject('测试项目', path.join(TMP, 'workspace'));
   check('创建项目', !!project.id && fs.existsSync(project.cwd));
@@ -192,6 +198,57 @@ async function main() {
   check('usage 累计输出 = 10+20', u.completionTokens === 30, String(u.completionTokens));
   check('lastPromptTokens 是最后一次的 100（上下文占用）', u.lastPromptTokens === 100, String(u.lastPromptTokens));
   check('lastCompletionTokens 是最后一次的 20', u.lastCompletionTokens === 20, String(u.lastCompletionTokens));
+
+  // 4c) 运行日志。
+  // 这是"请求停不下来"那类问题唯一的事后依据 —— 出事时磁盘上必须已经有一份完整记录，
+  // 不能等到复盘时才发现埋点被删了/写歪了。所以这里对**日志的产出**做断言，而不是只测函数返回。
+  console.log('\n4c) 运行日志（事后排障的唯一依据）');
+  const runLogFile = runlog.logFile();
+  check('日志文件名按天分：run-YYYY-MM-DD.log',
+    /run-\d{4}-\d{2}-\d{2}\.log$/.test(runLogFile || ''), String(runLogFile));
+  const logLines = (runLogFile && fs.existsSync(runLogFile) ? fs.readFileSync(runLogFile, 'utf8') : '')
+    .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));   // 顺便验证每行都是合法 JSON
+  const kinds = logLines.map((l) => l.kind);
+  check('写了 app.start（能看出是哪次启动、什么运行时）',
+    logLines.some((l) => l.kind === 'app.start' && l.pid), JSON.stringify(kinds));
+  check('轮次边界记了起止', kinds.filter((k) => k === 'turn').length >= 2, JSON.stringify(kinds));
+  check('模型请求记了发起与开销', kinds.includes('model.start') && kinds.includes('model.call'), JSON.stringify(kinds));
+
+  const mc = logLines.filter((l) => l.kind === 'model.call');
+  check('每次模型调用都有耗时与 token（共 2 次）',
+    mc.length === 2 && mc.every((l) => typeof l.durationMs === 'number' && l.ok === true),
+    JSON.stringify(mc));
+  check('模型开销的 token 数正确（末次 100 / 20）',
+    !!mc[1] && mc[1].promptTokens === 100 && mc[1].completionTokens === 20, JSON.stringify(mc[1] || null));
+
+  const tc = logLines.filter((l) => l.kind === 'tool.call');
+  check('工具调用记了名称、耗时、成功状态（★ 成功也记，不只记失败）',
+    tc.length === 1 && tc[0].tool === 'write_file' && typeof tc[0].durationMs === 'number' && tc[0].ok === true,
+    JSON.stringify(tc));
+  check('工具调用记了参数（复盘时要知道它拿什么去调的）',
+    !!tc[0] && !!tc[0].args && tc[0].args.relativePath === 'notes/hello.txt', JSON.stringify(tc[0] && tc[0].args));
+  check('失败才带 error 字段，成功时为 undefined（不塞无意义字段）',
+    !!tc[0] && tc[0].error === undefined);
+
+  // 脱敏：密钥绝不能落进日志文件（它是纯文本、还可能被随手发出去）
+  runlog.log('probe.secret', { apiKey: 'sk-abcdef1234567890', nested: { authorization: 'Bearer topsecret' } });
+  const logText = fs.readFileSync(runLogFile, 'utf8');
+  check('密钥被脱敏，不落盘',
+    !logText.includes('sk-abcdef1234567890') && !logText.includes('topsecret') && logText.includes('***7890'),
+    logText.split('\n').filter((l) => l.includes('probe.secret')).join(''));
+
+  // 关掉后不能再写（测试环境可整体关闭）
+  process.env.HATCH_RUN_LOG = '0';
+  const offInit = runlog.init({ logDir: RUNLOG_DIR });
+  const beforeOff = fs.readFileSync(runLogFile, 'utf8').split('\n').filter(Boolean).length;
+  runlog.log('should.not.appear', { x: 1 });
+  const offText = fs.readFileSync(runLogFile, 'utf8');
+  check('HATCH_RUN_LOG=0 时不写任何东西（init 返回 false，isEnabled 为假）',
+    offInit === false && runlog.isEnabled() === false
+      && !offText.includes('should.not.appear')
+      && offText.split('\n').filter(Boolean).length === beforeOff,
+    'init=' + offInit + ' 行数 ' + beforeOff + ' → ' + offText.split('\n').filter(Boolean).length);
+  delete process.env.HATCH_RUN_LOG;
 
   console.log('\n5) 检查点与回滚');
   const log = checkpoints.readLog(project.id);

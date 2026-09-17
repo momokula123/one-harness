@@ -9,6 +9,7 @@ const checkpoints = require('./checkpoints');
 const approvals = require('./approvals');
 const compact = require('./compact');
 const model = require('./model');
+const runlog = require('./runlog');
 const { PROMPTS, getProgram, toolAliasesFor } = require('./prompts');
 const skillsMod = require('./tools/skills');
 
@@ -44,12 +45,47 @@ function diffStat(beforeText, afterText) {
   return { added, removed };
 }
 
+/**
+ * 把内核事件挑重要的记进运行日志（`logs/run-YYYY-MM-DD.log`）。
+ * 只记事后排查用得上的：轮次边界、闸门裁决、压缩。
+ * **不记** assistant:delta —— 逐字流，量极大，且正文本来就在会话文件里。
+ * 模型调用与工具调用不在这里记：那两处有事件里没有的信息（耗时、token、完整结果），
+ * 在各自执行点顺手记更准。
+ */
+function logCoreEvent(ev) {
+  if (!ev || !ev.type) return;
+  const sessionId = ev.sessionId || null;
+  switch (ev.type) {
+    case 'turn:start':
+      runlog.turn({ phase: 'start', sessionId });
+      break;
+    case 'turn:end':
+      runlog.turn({ phase: 'end', sessionId, aborted: !!ev.aborted, files: (ev.files || []).length });
+      break;
+    case 'approval:decision':
+      runlog.log('gate.decision', {
+        sessionId, callId: ev.callId, tool: ev.tool, risk: ev.risk,
+        action: ev.action, reason: ev.reason, args: ev.args,
+      });
+      break;
+    case 'compaction':
+      runlog.log('compaction', { sessionId, dropped: ev.dropped });
+      break;
+    default:
+      break;
+  }
+}
+
 class Agent {
   constructor({ getSettings, emit, askUser }) {
     this.getSettings = getSettings;
-    this.emit = emit;
     this.askUser = askUser;
     this.running = new Map(); // sessionId -> AbortController
+    // 事件 → 运行日志的桥放在**内核**里，而不是宿主里：
+    // 日志是出事之后唯一的依据，不能因为换了个宿主（无界面跑、测试、别的壳）就断掉。
+    // 宿主照旧收到完整事件，这里只是在转发前顺手挑几条记下来。
+    const hostEmit = typeof emit === 'function' ? emit : () => {};
+    this.emit = (ev) => { logCoreEvent(ev); hostEmit(ev); };
   }
 
   isRunning(sessionId) {
@@ -96,13 +132,17 @@ class Agent {
     const ac = new AbortController();
     this.running.set(session.id, ac);
     let steps = 0;
+    // 计时基准必须放在 try **外面**：catch 里要记 elapsedMs，而 turn 是在 try 内部建的 ——
+    // 万一 getSettings() 就抛错（turn 还没建），catch 里读 turn.startedAt 会再抛一个
+    // ReferenceError，把"折成失败结果"的路径炸穿（曾实测：3 条用例因此变红）。
+    const turnStart = Date.now();
     try {
       // 这三行必须留在 try 里面：它们如果抛错（比如设置文件损坏、programId 对不上），
       // 而 try 还没开始，finally 就永远跑不到 → running 锁不释放，
       // 这个会话之后每一次发送都会被判成"正在运行中"，界面和内核一起永久卡死。
       const settings = this.getSettings();
       session.instruction = session.instruction || PROMPTS[session.promptKey || getProgram(session.programId).prompt];
-      const turn = { startedAt: Date.now(), snapshots: [] };
+      const turn = { startedAt: turnStart, snapshots: [] };
       this.emit({ type: 'turn:start', sessionId: session.id });
       while (steps < (settings.agent.maxSteps || 40)) {
         if (ac.signal.aborted) throw new Error('已停止');
@@ -125,6 +165,12 @@ class Agent {
         const assistantId = newId();
         this.emit({ type: 'assistant:start', sessionId: session.id, entryId: assistantId });
 
+        const modelStarted = Date.now();
+        runlog.log('model.start', {
+          sessionId: session.id, step: steps, model: mcfg.model, stream: true,
+          messages: messages.length, tools: (schemas || []).length,
+          promptChars: JSON.stringify(messages).length,
+        });
         const acc = await model.streamChat(mcfg, {
           messages,
           tools: schemas,
@@ -137,7 +183,15 @@ class Agent {
             else if (ev.type === 'toolName') this.emit({ type: 'tool:announce', sessionId: session.id, name: ev.name });
           },
         });
-
+        // 模型调用的开销是排查"请求停不下来"的关键证据：耗时异常长 / token 暴涨都在这里
+        runlog.modelCall({
+          sessionId: session.id, step: steps, model: mcfg.model, ok: true,
+          durationMs: Date.now() - modelStarted,
+          promptTokens: (acc.usage && acc.usage.prompt_tokens) ?? null,
+          completionTokens: (acc.usage && acc.usage.completion_tokens) ?? null,
+          toolCalls: acc.toolCalls.length,
+          finishReason: acc.finishReason || null,
+        });
         // 3) 落盘这条 assistant 消息
         if (acc.usage) sessionLib.addUsage(session, acc.usage);
         const parts = [];
@@ -240,6 +294,19 @@ class Agent {
           const started = Date.now();
           const result = await tools.execute(call.name, call.argsText, ctx);
           const durationMs = Date.now() - started;
+          // 每次工具调用都落日志，**成功失败的都记**。
+          // 排查"请求停不下来"靠的正是"同一类调用反复出现、每次耗时 20 秒"这种模式，
+          // 而这类证据的主体恰恰是那些没报错但很慢的调用 —— 只记失败会看不见它。
+          // 写在**内核**而不是宿主（main.js 的 emit 桥）里：日志是排障的最后依据，
+          // 不能因为换了宿主、或跑在测试里就断掉。
+          runlog.toolCall({
+            sessionId: session.id, callId: call.callId, tool: tool.alias,
+            ok: !(result && result.isError),
+            durationMs, outChars: ((result && result.text) || '').length,
+            args,
+            // 失败时留下完整结果：超时/堆栈都在结果文本里，而 emit 出去的事件只带前 300 字
+            error: result && result.isError ? String(result.text || '').slice(0, 1200) : undefined,
+          });
           // 把闸门的决定一起落盘：这样工具卡上能显示「谁放行的、评审怎么判的」，
           // 重开会话也还在（不然这块信息只活在事件里，一刷新就没了）。
           sessionLib.toolMessage(session, {
@@ -266,6 +333,12 @@ class Agent {
       return { ok: false, reason: 'max-steps', steps };
     } catch (e) {
       const aborted = ac.signal.aborted;
+      // 中断与报错都落日志：这是"为什么停了"最直接的证据（用户手动停 / 超时 / 接口报错分开）
+      runlog.log('turn.abort', {
+        sessionId: session.id, aborted, steps,
+        error: e && e.message ? String(e.message).slice(0, 400) : String(e),
+        elapsedMs: Date.now() - turnStart,
+      });
       sessionLib.appendEntry(session, aborted
         ? { type: 'interrupted' }
         : { type: 'error', message: e && e.message ? e.message : String(e), critical: true });
