@@ -15,10 +15,42 @@
     "test:features": "node test/run-ui.js test/features.js",
     "test:approval-mode": "node test/run-approval-mode.js",
     "launch-check": "node test/launch-check.js",
-    "test": "node test/smoke.js && node test/run-ui.js && node test/offscreen-mouse.js && node test/run-approval-mode.js && node test/bionic-compare.js && node test/launch-check.js"
+    "test": "node test/smoke.js && node test/run-ui.js && node test/offscreen-mouse.js && node test/run-approval-mode.js && node test/bionic-compare.js && node test/launch-check.js",
+    "dist": "electron-builder --win --dir",
+    "dist:zip": "electron-builder --win zip"
   },
   "devDependencies": {
     "electron": "^44.4.1",
     "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.momokula.oneharness",
+    "productName": "One Harness",
+    "copyright": "Copyright © 2026 momokula123",
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "compression": "maximum",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "core/**/*",
+      "renderer/**/*",
+      "skills/**/*",
+      "assets/icon.png",
+      "assets/icon.ico",
+      "assets/icon-512.png",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "assets/icon.ico"
+    }
   }
 }

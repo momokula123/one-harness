@@ -17,6 +17,17 @@ const uistate = require('./core/uistate');
 
 store.init();
 
+// 绿色版：把 Chromium 自己的 userData（缓存 / Local Storage / GPU 缓存等）也塞进程序文件夹，
+// 否则它会写到 %APPDATA%/One Harness —— 那样"拷走文件夹"就不算真的自包含。
+// 必须在 app ready 之前设置，且开发态不动（沿用原本的位置，不惊动已有环境）。
+// 用户显式给了 HATCH_USER_DATA 时以用户为准（多实例并行测试也靠它隔离）。
+if (app.isPackaged || process.env.HATCH_USER_DATA) {
+  const ud = process.env.HATCH_USER_DATA
+    ? path.resolve(process.env.HATCH_USER_DATA)
+    : path.join(store.ROOT, 'userdata');
+  try { fs.mkdirSync(ud, { recursive: true }); app.setPath('userData', ud); } catch (_) { /* 权限异常就不改，退回默认 */ }
+}
+
 const WINDOW_KEY = 'main';
 // 布局文件里可能留着旧字段名（对齐 Bionic 时把 rightPanelView 改成了 devRightPanelView、
 // 把 workspace.activeProjectId 搬到了顶层 windowContext）。空 patch 走一遍

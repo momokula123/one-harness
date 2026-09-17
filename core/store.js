@@ -4,7 +4,20 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const ROOT = path.resolve(__dirname, '..');
+// 打包成绿色版（electron-builder 默认把代码放进 app.asar）后，__dirname 落在 asar 内部 ——
+// 那是只读的，而且用户根本看不到它。绿色版的要求是"整个文件夹拷到哪、数据就跟到哪"，
+// 所以 packaged 时把根目录换成 exe 所在的文件夹（win-unpacked/One Harness.exe → win-unpacked/）。
+// 开发态（npm start）保持 repo 根目录不变，现有的 data/、测试钩子一律不受影响。
+const ROOT = (() => {
+  try {
+    const { app } = require('electron');
+    if (app && app.isPackaged) return path.dirname(app.getPath('exe'));
+  } catch (_) { /* 纯 node 场景（测试/扫描脚本）没有 electron，忽略 */ }
+  return path.resolve(__dirname, '..');
+})();
+// 代码自身的所在：开发态 = repo 根；打包后 = app.asar 内（Electron 能透明读 asar）。
+// 随程序分发的只读资源（内置技能等）走这个，用户可见可写的东西一律走 ROOT。
+const APP_ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = process.env.HATCH_DATA_DIR ? path.resolve(process.env.HATCH_DATA_DIR) : path.join(ROOT, 'data');
 const PROJECTS_DIR = path.join(DATA_DIR, 'projects');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
@@ -230,7 +243,7 @@ function copyFileIfExists(src, dst) {
 }
 
 module.exports = {
-  ROOT, DATA_DIR, PROJECTS_DIR, SETTINGS_FILE, DEFAULT_SETTINGS,
+  ROOT, APP_ROOT, DATA_DIR, PROJECTS_DIR, SETTINGS_FILE, DEFAULT_SETTINGS,
   init, ensureDir, readJson, writeJsonAtomic, deepMerge, getSettings, saveSettings,
   newId, shortId, listProjects, createProject, getProject, updateProject, deleteProject,
   projectDeleteInfo, projectDir,

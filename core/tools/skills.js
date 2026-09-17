@@ -6,7 +6,9 @@ const path = require('path');
 const store = require('../store');
 
 function skillDirs() {
-  return [path.join(store.ROOT, 'skills'), path.join(store.DATA_DIR, 'skills')];
+  // APP_ROOT = 随程序分发的只读技能（打包后在 app.asar 内，Electron 可透明读取）
+  // DATA_DIR/skills = 用户自己的技能，绿色版里就在 exe 旁边，可增删改
+  return [path.join(store.APP_ROOT, 'skills'), path.join(store.DATA_DIR, 'skills')];
 }
 
 function parseFrontmatter(text) {
