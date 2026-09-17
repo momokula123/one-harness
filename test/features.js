@@ -719,6 +719,45 @@
     renderFiles();
     await wait(150);
 
+    // ⑥ 消息操作条不能压住别的东西（用户截图报的：两个图标叠在「本轮完成」卡右端上）
+    //    根因：操作条原先是 bottom:-26px 挂在行外，而 .row 下边距只有 16px → 垂进下一行。
+    //    这条按**几何**断言：造「助手回复 + 紧随的汇总卡」，两者不许有任何交叠。
+    {
+      const tr = $id('transcript');
+      const saved = S.transcript.slice();
+      S.transcript = [
+        { kind: 'assistant', id: 'zz-a', ts: Date.now(), text: '想要哪种风格多一点？我可以再攒一批。' },
+        { kind: 'summary', id: 'zz-s', ts: Date.now(), durationMs: 12000, files: [] },
+        { kind: 'user', id: 'zz-u', ts: Date.now(), text: '再攒一批' },
+      ];
+      renderTranscript();
+      await wait(450);
+      const rows = [...tr.querySelectorAll('.row')];
+      const R = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+      const hit = (a, b) => !(a.r <= b.l || b.r <= a.l || a.b <= b.t || b.b <= a.t);
+      const asst = rows.find((x) => x.classList.contains('assistant'));
+      const summ = rows.find((x) => x.classList.contains('summary'));
+      const user = rows.find((x) => x.classList.contains('user'));
+      const aAct = asst && asst.querySelector('.msg-actions');
+      const uAct = user && user.querySelector('.msg-actions');
+      const uBub = user && user.querySelector('.bubble');
+      R.msgActions = {
+        asst: aAct ? R(aAct) : null, summ: summ ? R(summ) : null, asstRow: asst ? R(asst) : null,
+        uAct: uAct ? R(uAct) : null, uBub: uBub ? R(uBub) : null,
+      };
+      check('N-3 前置：助手行/汇总行/用户行与它们的操作条都在（否则下面几条空跑）',
+        !!(aAct && summ && uAct && uBub), Object.keys(R.msgActions));
+      check('N-3a ★ 助手消息的操作条不压住紧随其后的「本轮完成」卡',
+        !hit(R(aAct), R(summ)), R.msgActions);
+      check('N-3b 操作条也不垂出自己那一行（旧写法 bottom:-26px 会垂出去）',
+        R(aAct).b <= R(asst).b + 1, { act: R(aAct), row: R(asst) });
+      check('N-3c 用户消息的操作条不压住自己的气泡（用户气泡右对齐，操作条挂左下角）',
+        !hit(R(uAct), R(uBub)), R.msgActions);
+      S.transcript = saved;
+      renderTranscript();
+      await wait(250);
+    }
+
     // 收尾：别把 'browser' 之外的落盘值留给后面的用例
     R.browser = r;
   }

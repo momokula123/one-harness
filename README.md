@@ -6,6 +6,8 @@
 
 Electron + 纯 JS/HTML/CSS，无构建步骤。
 
+![One Harness 界面](assets/screenshot.png)
+
 ## 快速开始
 
 ```bash

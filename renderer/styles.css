@@ -296,18 +296,22 @@ body.resizing { cursor: col-resize; user-select: none; }
 .bubble p:last-child { margin-bottom: 0; }
 .row .meta { color: var(--text-4); font-size: 11px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
 
-/* 消息底部小图标（复制 / 分叉 / 回滚）
-   绝对定位、**不占布局高度**：原来它在文档流里（margin-top 6 + 高 26 = 32px），
-   悬停才显形却一直占着这 32px —— 于是每条消息后面都留着一块看不见的空白，
-   最明显的就是「本轮完成」那条上面（32px + 行距 16px = 48px）。
-   挂到行右下角（bottom:-26px 完全落在行外的行间缝里）就不会再压住正文，
-   z-index 保证它在下一行之上仍然点得到。 */
+/* 消息小图标（复制 / 分叉 / 回滚）
+   两次踩坑的结论：它不能占布局高度，也不能垂到行外。
+   · 早期在文档流里（占 32px）→ 每条消息尾部留一块看不见的空白（「本轮完成」上面 48px）。
+   · 改成绝对定位挂 bottom:-26px → 不占高度了，但 .row 的下边距只有 16px，
+     操作条会垂到**下一行**的地盘里，「本轮完成」那张汇总卡就被两个图标压住了（用户截图报的）。
+   最终：按行类型分别挂到**行内天然留白的位置**，既不占高度、不越界、也不压正文。
+   两种行的留白位置不一样，所以得分开写：
+     · 助手行顶部是「助手 · 时间」的 meta 行，右侧大片空白 → 右上角
+     · 用户行没有 meta，气泡**右对齐**（max-width 78%），左侧是空白 → 左下角 */
 .msg-actions {
-  position: absolute; right: 0; bottom: -26px; z-index: 2;
+  position: absolute; z-index: 2;
   display: flex; gap: 2px; opacity: 0; transition: opacity .12s;
 }
+.row.assistant .msg-actions { top: 0; right: 0; }
+.row.user .msg-actions { left: 0; bottom: 0; }
 .row:hover .msg-actions, .msg-actions.keep { opacity: 1; }
-.row .msg-actions { justify-content: flex-end; }
 .act-btn {
   width: 26px; height: 26px; padding: 0; border: none; background: transparent;
   border-radius: 7px; color: var(--text-3); display: inline-flex; align-items: center; justify-content: center;
