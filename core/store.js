@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const projectIndex = require('./project-index');
 
 // 打包成绿色版（electron-builder 默认把代码放进 app.asar）后，__dirname 落在 asar 内部 ——
 // 那是只读的，而且用户根本看不到它。绿色版的要求是"整个文件夹拷到哪、数据就跟到哪"，
@@ -202,6 +203,62 @@ function projectDeleteInfo(projectId) {
   };
 }
 
+// ---- 工程索引的导出 / 导入 ----
+// 两件事都**只动 projects.json**：会话正文（projects/<id>/sessions/）与工作目录一律不碰。
+// 判定逻辑（打包形状、合并规则）全在 core/project-index.js 里，这里只负责读写盘 ——
+// 于是"导入会不会覆盖我的工程"这种问题能在单测里回答，不用起界面。
+function writeProjects(list) {
+  const out = Array.isArray(list) ? list : [];
+  writeJsonAtomic(PROJECTS_FILE, { projects: out });
+  return out;
+}
+
+function exportProjectIndex(destPath, meta) {
+  const bundle = projectIndex.build(listProjects(), meta);
+  writeJsonAtomic(destPath, bundle);
+  return { path: destPath, count: bundle.projects.length, bytes: fs.statSync(destPath).size };
+}
+
+/**
+ * 导入：解析 → 合并（只增不减，见 core/project-index.js 的 merge）→ 写回。
+ * 返回的 orphan = 新增的工程里有几个在本机**没有会话记录** —— 索引拿回来了但正文没跟过来，
+ * 这个数字必须说出来，否则用户看到"工程回来了、会话是空的"会以为记录被吞了。
+ */
+function importProjectIndex(srcPath) {
+  let text;
+  try {
+    text = fs.readFileSync(srcPath, 'utf8');
+  } catch (e) {
+    return { ok: false, error: '读不到这个文件：' + String((e && e.message) || e) };
+  }
+  const parsed = projectIndex.parse(text);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+
+  const before = listProjects();
+  const merged = projectIndex.merge(before, parsed.projects);
+  if (merged.added) writeProjects(merged.projects);
+
+  let orphan = 0;
+  for (const id of merged.addedIds) {
+    let n = 0;
+    try { n = listSessions(id).length; } catch (_) { n = 0; }
+    if (!n) orphan++;
+  }
+  return {
+    ok: true,
+    path: srcPath,
+    added: merged.added,
+    skipped: merged.skipped,
+    total: merged.projects.length,
+    orphan,
+    declared: parsed.meta.declared,
+    // 文件里声称 N 条、实际能用的只有 M 条 → 差额是"缺 id 之类被忽略"的行数。
+    // 单独报出来，免得手工整理过的清单里少了几条却没人发现（skipped 只说"已有"）。
+    invalid: Math.max(0, parsed.meta.declared - merged.added - merged.skipped),
+    legacy: parsed.meta.legacy,
+  };
+}
+
 // ---- sessions ----
 function sessionsDir(projectId) {
   return ensureDir(path.join(projectDir(projectId), 'sessions'));
@@ -260,5 +317,6 @@ module.exports = {
   newId, shortId, listProjects, createProject, getProject, updateProject, deleteProject,
   uniquePath,
   projectDeleteInfo, projectDir,
+  writeProjects, exportProjectIndex, importProjectIndex,
   listSessions, loadSession, saveSession, sessionFile, copyFileIfExists,
 };

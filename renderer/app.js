@@ -2380,10 +2380,39 @@ const SETTINGS_SECTIONS = {
         <div class="group-title">数据</div>
         <div class="row-inline"><button id="btn-open-data" class="ghost">打开数据目录</button></div>
         <div class="hint">模型端点、审批、工具等配置都存在数据目录的 settings.json 里。</div>
+
+        <div class="group-title">工程索引</div>
+        <div class="row-inline">
+          <button id="btn-export-index">导出工程索引</button>
+          <button id="btn-import-index" class="ghost">导入工程索引</button>
+        </div>
+        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。导出的只是**索引**（每个工程的 id / 名字 / 工作目录，几 KB），不含会话正文 —— 正文在数据目录的 projects/&lt;工程 id&gt;/sessions/ 下，要连正文一起搬就整个拷贝数据目录。</div>
+        <div class="hint">导入是**只增不减**的：同一个工程（id 相同）会被跳过，本机已有的名字与工作目录不会被备份里的旧值覆盖；本机多出来的工程也不受影响。</div>
       `;
     },
     bind() {
       on('btn-open-data', () => api.shell.openDataDir());
+      on('btn-export-index', async () => {
+        const r = await api.projects.exportIndex();
+        if (!r.ok) { if (!r.canceled) toast(r.message, 'err'); return; }
+        toast('已导出 ' + r.count + ' 个工程的索引：' + r.path, 'ok');
+      });
+      on('btn-import-index', async () => {
+        const r = await api.projects.importIndex();
+        if (!r.ok) { if (!r.canceled) toast(r.message, 'err'); return; }
+        // 索引变了，左栏的工程树和会话列表都得跟着重读；当前还没选中工程时顺手选上第一个
+        S.projects = await api.projects.list();
+        await refreshSessions();
+        renderTree();
+        if (!S.projectId && S.projects.length) await setProject(S.projects[0].id, { sessionId: null });
+        renderSettingsModal();
+        const bits = ['新增 ' + r.added + ' 个工程'];
+        if (r.skipped) bits.push('已有 ' + r.skipped + ' 个跳过');
+        if (r.invalid) bits.push('另有 ' + r.invalid + ' 条记录不完整已忽略');
+        let msg = '导入完成：' + bits.join('，');
+        if (r.orphan) msg += '。其中 ' + r.orphan + ' 个在本机没有会话记录，正文要单独拷贝数据目录才是完整的';
+        toast(msg, r.added ? 'ok' : '');
+      });
       on('btn-test', async () => {
         const ml = await api.models.list({
           baseUrl: $('set-baseUrl').value, apiKey: $('set-apiKey').value, model: $('set-model').value,

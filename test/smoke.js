@@ -529,6 +529,124 @@ async function main() {
   check('对照：本地路径不会被判成 URL',
     ot.isUrlLike('C:\\Users\\Administrator\\Downloads') === false && ot.isUrlLike('file:///C:/x') === true);
 
+  // ---------- 工程索引的导出 / 导入（core/project-index.js + store） ----------
+  // 索引就是 projects.json 里那几行（id / 名字 / 工作目录 / 创建时间）。这组断言要钉住两件事：
+  //   ① 导出的是**真文件**（判据：把它导回来能读出来，而不是只看"函数返回了 ok"）；
+  //   ② 导入**只增不减**、且不把备份里的旧值盖到本机头上 —— 覆盖是静默的，不钉住就没人发现。
+  const pi = require('../core/project-index');
+
+  check('打包形状对：kind / version / count / projects',
+    (() => {
+      const b = pi.build([{ id: 'p1', name: '甲', cwd: 'C:/a', createdAt: 5 }], { version: 'test' });
+      return b.kind === pi.KIND && b.version === pi.VERSION && b.count === 1 &&
+        b.app.version === 'test' && typeof b.exportedAt === 'number' && b.projects.length === 1;
+    })(), JSON.stringify(pi.build([{ id: 'p1', name: '甲', cwd: 'C:/a', createdAt: 5 }], { version: 'test' })));
+  check('打包时丢掉没有 id 的记录（索引靠 id 认工程）',
+    pi.build([{ name: '没有 id' }, { id: 'ok', name: '有 id' }], {}).count === 1);
+
+  check('文件名补扩展名：没写 .json 就补上',
+    pi.ensureJsonExt('D:/bak/index') === 'D:/bak/index.json');
+  check('已带 .json 不重复补，大写也认',
+    pi.ensureJsonExt('D:/bak/index.json') === 'D:/bak/index.json' && pi.ensureJsonExt('a.JSON') === 'a.JSON');
+  check('默认文件名带本地时间到分钟（同一天导多次不会撞名）',
+    pi.defaultFileName(new Date(2026, 8, 18, 9, 5)) === 'one-harness-projects-20260918-0905.json',
+    pi.defaultFileName(new Date(2026, 8, 18, 9, 5)));
+
+  check('合并只按 id 去重：同一个工作目录下的两个工程都保留（本机数据里就有一例）',
+    pi.merge([], [{ id: 'x', name: 'X', cwd: 'C:/shared' }, { id: 'y', name: 'Y', cwd: 'C:/shared' }]).added === 2);
+  check('备份里同一条出现两次只进一次',
+    (() => { const m = pi.merge([], [{ id: 'a', name: 'A' }, { id: 'a', name: 'A2' }]); return m.added === 1 && m.skipped === 1; })());
+  check('merge 不修改入参数组',
+    (() => { const src = [{ id: 'a', name: 'A' }, { id: 'a', name: 'A2' }]; pi.merge([], src); return src.length === 2; })());
+  check('规范化不保留外来字段（备份里的附加信息不许写回索引）',
+    (() => { const p = pi.normalizeProject({ id: 'z', name: 'Z', sessions: 7, junk: true }); return p && !('sessions' in p) && !('junk' in p); })(),
+    JSON.stringify(pi.normalizeProject({ id: 'z', name: 'Z', sessions: 7, junk: true })));
+
+  const idxFile = path.join(TMP, 'idx-export.json');
+  const idxBefore = store.listProjects();
+  const ex = store.exportProjectIndex(idxFile, { version: 'test' });
+  check('导出：文件真的落到盘上且有内容', fs.existsSync(idxFile) && ex.bytes > 0, JSON.stringify(ex));
+  check('导出：count 与本机工程数一致', ex.count === idxBefore.length, ex.count + ' vs ' + idxBefore.length);
+  const bundle = JSON.parse(fs.readFileSync(idxFile, 'utf8'));
+  check('导出：kind 是本程序的工程索引', bundle.kind === pi.KIND);
+  check('导出：记下了是哪个程序版本做的这份备份', bundle.app.version === 'test');
+
+  const reImport = store.importProjectIndex(idxFile);
+  check('把刚导出的文件导回来：一条都不新增 —— 这是"导出的是真文件"的判据',
+    reImport.ok === true && reImport.added === 0 && reImport.skipped === idxBefore.length, JSON.stringify(reImport));
+
+  // 摘掉一条索引，再导入，看它是否**只**把这一条补回来
+  const idxProj = store.createProject('索引往返项目', path.join(TMP, 'idx-ws'));
+  store.exportProjectIndex(idxFile, { version: 'test' });
+  store.deleteProject(idxProj.id);
+  check('先把这条从索引里摘掉', !store.listProjects().some((p) => p.id === idxProj.id));
+  const im2 = store.importProjectIndex(idxFile);
+  check('导入把摘掉的那条补回来（新增 1、其余全部跳过）',
+    im2.ok === true && im2.added === 1 && im2.skipped === idxBefore.length, JSON.stringify(im2));
+  const idxBack = store.getProject(idxProj.id);
+  check('补回来的字段与本机原值逐项一致（这个名字/工作目录/创建时间都要还原）',
+    !!idxBack && idxBack.name === '索引往返项目' && idxBack.cwd === idxProj.cwd && idxBack.createdAt === idxProj.createdAt,
+    JSON.stringify(idxBack));
+  check('新增的工程在本机没有会话记录 → orphan 说出来（免得以为会话被吞了）', im2.orphan === 1, String(im2.orphan));
+
+  // 手工造一份"带杂质的备份"：外来字段、同 id 改名、空名字、缺 id
+  const fxFile = path.join(TMP, 'idx-fixture.json');
+  fs.writeFileSync(fxFile, JSON.stringify({
+    kind: pi.KIND, version: 1, exportedAt: Date.now(), count: 4,
+    projects: [
+      { id: 'fx-a', name: '外来工程 A', cwd: 'C:/tmp/a', createdAt: 111, sessions: 7, junk: true },
+      { id: idxProj.id, name: '备份里改过的名字', cwd: 'C:/tmp/zzz', createdAt: 999 },
+      { id: 'fx-b', name: '' },
+      { name: '没有 id' },
+    ],
+  }), 'utf8');
+  const im3 = store.importProjectIndex(fxFile);
+  check('导入杂质备份：只增不改（新增 2、已有 1 跳过、不完整 1 忽略）',
+    im3.ok === true && im3.added === 2 && im3.skipped === 1 && im3.invalid === 1, JSON.stringify(im3));
+  check('文件声称 4 条 —— 声明数与实际处理数都要能对上账',
+    im3.declared === 4 && im3.added + im3.skipped + im3.invalid === 4, JSON.stringify(im3));
+  check('★ 本机已有的工程不被备份里的旧值覆盖（名字仍是本机的）',
+    store.getProject(idxProj.id).name === '索引往返项目', store.getProject(idxProj.id).name);
+  check('★ 工作目录也不被覆盖',
+    store.getProject(idxProj.id).cwd === idxProj.cwd, store.getProject(idxProj.id).cwd);
+  check('导入写回索引的记录只有那四个字段（外来字段没被带进来）',
+    (() => {
+      const on = JSON.parse(fs.readFileSync(path.join(store.DATA_DIR, 'projects.json'), 'utf8'));
+      const p = on.projects.find((x) => x.id === 'fx-a');
+      return !!p && JSON.stringify(Object.keys(p).sort()) === JSON.stringify(['createdAt', 'cwd', 'id', 'name']);
+    })(),
+    JSON.stringify(JSON.parse(fs.readFileSync(path.join(store.DATA_DIR, 'projects.json'), 'utf8')).projects.filter((x) => x.id === 'fx-a')));
+  check('空名字的工程落成「未命名项目」、缺 createdAt 的补上一个数字',
+    (() => {
+      const p = store.getProject('fx-b');
+      return !!p && p.name === '未命名项目' && p.cwd === null && typeof p.createdAt === 'number' && p.createdAt > 0;
+    })(), JSON.stringify(store.getProject('fx-b')));
+  check('导入的工程可以从索引里查回来（列表里真有）',
+    store.listProjects().some((p) => p.id === 'fx-a'));
+
+  // 手写的裸数组索引也要能导进来（用户自己整理过的清单）
+  const legacyFile = path.join(TMP, 'idx-legacy.json');
+  fs.writeFileSync(legacyFile, JSON.stringify([{ id: 'legacy-1', name: '裸数组工程', cwd: null, createdAt: 1 }]), 'utf8');
+  const im4 = store.importProjectIndex(legacyFile);
+  check('裸数组形状也认（手写清单不至于导不进来）', im4.ok === true && im4.added === 1 && im4.legacy === true, JSON.stringify(im4));
+
+  check('导入不存在的文件 → 明确报「读不到」',
+    (() => { const r = store.importProjectIndex(path.join(TMP, 'idx-nope.json')); return r.ok === false && /读不到/.test(r.error); })(),
+    JSON.stringify(store.importProjectIndex(path.join(TMP, 'idx-nope.json'))));
+  fs.writeFileSync(path.join(TMP, 'idx-junk.json'), '这不是 json', 'utf8');
+  check('导入垃圾文件 → 明确报「不是合法的 JSON」',
+    (() => { const r = store.importProjectIndex(path.join(TMP, 'idx-junk.json')); return r.ok === false && /JSON/.test(r.error); })());
+  fs.writeFileSync(path.join(TMP, 'idx-other.json'), JSON.stringify({ kind: 'other-app/data', projects: [] }), 'utf8');
+  check('别的程序的 json → 报错并带上对方的 kind（不硬导）',
+    (() => { const r = store.importProjectIndex(path.join(TMP, 'idx-other.json')); return r.ok === false && /other-app\/data/.test(r.error); })(),
+    JSON.stringify(store.importProjectIndex(path.join(TMP, 'idx-other.json'))));
+  fs.writeFileSync(path.join(TMP, 'idx-empty.json'), JSON.stringify({ hello: 1 }), 'utf8');
+  check('没有 projects 列表的 json → 报错',
+    store.importProjectIndex(path.join(TMP, 'idx-empty.json')).ok === false);
+  // 反向对照：同一个入口对合法文件必须是 ok:true —— 否则上面那几条 "ok===false" 可能恒真
+  check('对照：同一入口对合法文件是 ok:true（证明那几条报错断言有区分度）',
+    store.importProjectIndex(legacyFile).ok === true);
+
   server.close();
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);
   process.exit(fail ? 1 : 0);

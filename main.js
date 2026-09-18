@@ -9,6 +9,7 @@ const store = require('./core/store');
 const sessionLib = require('./core/session');
 const images = require('./core/images');
 const openTarget = require('./core/open-target');
+const projectIndex = require('./core/project-index');
 const tools = require('./core/tools');
 const checkpoints = require('./core/checkpoints');
 const { Agent, sessionEvent, sessionMeta } = require('./core/agent');
@@ -685,6 +686,58 @@ function registerIpc() {
     if (bgBlocked('系统文件夹对话框')) return null;
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
+  });
+
+  // 工程索引的导出 / 导入。**只动 projects.json 那几行**，会话正文与工作目录一律不碰，
+  // 与「删除项目只摘索引」是同一套保守语义。合并规则在 core/project-index.js（只增不减）。
+  //
+  // 测试缝：HATCH_SAVE_PATH / HATCH_OPEN_PATH 存在时直接当作用户选好的路径，不弹对话框
+  // （原生对话框没法自动化，见 HATCH_PICK_FOLDER 的同款注释）。用备份文件自己的往返
+  // 做端到端验证就是靠这条缝 —— 导出到该路径，再把它导入回来。
+  ipcMain.handle('projects:exportIndex', async () => {
+    let dest = process.env.HATCH_SAVE_PATH || null;
+    if (!dest) {
+      if (bgBlocked('系统保存对话框')) return { ok: false, message: '后台模式不弹系统对话框' };
+      const r = await dialog.showSaveDialog(win, {
+        title: '导出工程索引',
+        defaultPath: path.join(app.getPath('documents'), projectIndex.defaultFileName()),
+        filters: [{ name: 'One Harness 工程索引', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePath) return { ok: false, canceled: true, message: '已取消' };
+      dest = r.filePath;
+    }
+    try {
+      const r = store.exportProjectIndex(projectIndex.ensureJsonExt(dest), { version: app.getVersion() });
+      console.log('[projects] 导出索引 ' + JSON.stringify({ path: r.path, count: r.count, bytes: r.bytes }));
+      return { ok: true, path: r.path, count: r.count, bytes: r.bytes };
+    } catch (e) {
+      return { ok: false, message: '写不进去：' + String((e && e.message) || e) };
+    }
+  });
+
+  ipcMain.handle('projects:importIndex', async () => {
+    let src = process.env.HATCH_OPEN_PATH || null;
+    if (!src) {
+      if (bgBlocked('系统打开对话框')) return { ok: false, message: '后台模式不弹系统对话框' };
+      const r = await dialog.showOpenDialog(win, {
+        title: '导入工程索引',
+        properties: ['openFile'],
+        filters: [{ name: 'One Harness 工程索引', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true, message: '已取消' };
+      src = r.filePaths[0];
+    }
+    let r;
+    try {
+      r = store.importProjectIndex(src);
+    } catch (e) {
+      return { ok: false, message: '导入失败：' + String((e && e.message) || e) };
+    }
+    if (!r.ok) return { ok: false, message: r.error };
+    console.log('[projects] 导入索引 ' + JSON.stringify({
+      path: r.path, added: r.added, skipped: r.skipped, total: r.total, orphan: r.orphan, invalid: r.invalid,
+    }));
+    return { ok: true, path: r.path, added: r.added, skipped: r.skipped, total: r.total, orphan: r.orphan, invalid: r.invalid };
   });
 
   ipcMain.handle('sessions:list', (_e, projectId) => store.listSessions(projectId));

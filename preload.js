@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('hatch', {
     // 删除是"只摘索引"：从项目列表里移除，磁盘记录与工作目录都不动
     remove: (input) => invoke('projects:delete', input),
     deleteInfo: (input) => invoke('projects:deleteInfo', input),
+    // 索引的备份与恢复：同样只动 projects.json，导入只增不减
+    exportIndex: () => invoke('projects:exportIndex'),
+    importIndex: () => invoke('projects:importIndex'),
   },
   sessions: {
     list: (projectId) => invoke('sessions:list', projectId),

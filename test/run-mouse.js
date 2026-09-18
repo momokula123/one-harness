@@ -19,6 +19,9 @@ const TMP = path.join(ROOT, 'test', '.tmp-mouse');
 let DATA_DIR = path.join(TMP, 'data');
 const PICK_DIR = path.join(TMP, 'probe-proj');
 const OUT = path.join(TMP, 'mouse-result.json');
+// 导出/导入工程索引用同一个文件，跑之前先删掉 —— 留着上一轮的会让人分不清
+// "导入读到的是这一轮导出的"还是"上一轮的残留"
+const IDX_FILE = path.join(TMP, 'projects-export.json');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 const TIMEOUT_MS = Number(process.env.HATCH_MOUSE_TIMEOUT || 240000);
 
@@ -42,6 +45,7 @@ try {
 fs.mkdirSync(TMP, { recursive: true });
 fs.mkdirSync(PICK_DIR, { recursive: true });
 try { fs.rmSync(OUT, { force: true }); } catch {}
+try { fs.rmSync(IDX_FILE, { force: true }); } catch {}
 
 const env = {
   ...process.env,
@@ -59,6 +63,11 @@ const env = {
   // 除"不真打开"以外的链路（IPC → 解析 → 回值 → 界面提示）全是真的。
   HATCH_OPEN_DRYRUN: '1',
   HATCH_MOUSE_DELAY: '3000',
+  // 工程索引的导出 / 导入也各有一次原生对话框。两个缝指向**同一个文件**，
+  // 于是"导出 → 再导回来"能做成真往返：导入读得出内容，就说明导出真的写了文件，
+  // 而不是只返回了一句 ok（这条比断言返回值强）。
+  HATCH_SAVE_PATH: IDX_FILE,
+  HATCH_OPEN_PATH: IDX_FILE,
 };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.NODE_OPTIONS;

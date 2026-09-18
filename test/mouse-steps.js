@@ -409,6 +409,62 @@ module.exports = async ({ click, dblclick, probe, js, wait, log, input, hover, d
     add('右栏浏览器的打开按钮', false, String((e && e.message) || e));
   }
 
+  // ---- 12c. 设置里的「导出 / 导入工程索引」 ----
+  // 用户要的是"把工程索引备份一份、换机器再导回来"。这里真鼠标点这两个按钮，
+  // 并做一次**真往返**：导出 → 从索引里摘掉一个工程 → 再导入 → 它必须回来。
+  // 跑分器把 HATCH_SAVE_PATH / HATCH_OPEN_PATH 指向同一个文件，所以"导出写的是真文件"
+  // 这条能验得很硬：第二步导入能读出内容，就说明文件真的落盘了，而不是函数回了句 ok。
+  try {
+    await js("(() => { openSettings('general'); return true; })()");
+    await wait(500);
+    const eb = await probe('#btn-export-index');
+    add('设置里「导出工程索引」能被真实鼠标点到',
+      eb.found && eb.visible && eb.reachable === true, eb);
+
+    const toasts = () => js("[...document.querySelectorAll('#toasts .toast')].map(e=>e.textContent).join(' ~ ')");
+    const clearToasts = () => js("(() => { document.getElementById('toasts').innerHTML=''; return true; })()");
+    const n0 = await js('S.projects.length');
+
+    await clearToasts();
+    await click('#btn-export-index', '点「导出工程索引」');
+    await wait(1000);
+    const tExp = await toasts();
+    add('导出：提示里带出工程数，且与本机索引条数一致',
+      tExp.includes('已导出 ' + n0 + ' 个工程的索引：'), { n0, tExp });
+
+    await clearToasts();
+    await click('#btn-import-index', '点「导入工程索引」（刚导出的那份）');
+    await wait(1000);
+    const tImp = await toasts();
+    add('★ 把刚导出的文件导回来能读出内容（证明导出写的是真文件）',
+      tImp.includes('新增 0 个工程') && tImp.includes('已有 ' + n0 + ' 个跳过'), { n0, tImp });
+
+    // 真往返：摘掉一条**非当前**工程的索引，再导入，它必须回来
+    const victim = await js("(S.projects.find(p => p.id !== S.projectId) || S.projects[0]).id");
+    const victimName = await js("(S.projects.find(p => p.id !== S.projectId) || S.projects[0]).name");
+    const rm = await js("(async () => { const r = await api.projects.remove({ projectId: " + JSON.stringify(victim) +
+      " }); S.projects = await api.projects.list(); renderTree(); return { ok: r.ok, left: S.projects.length }; })()");
+    add('反向对照：先确认那条真被摘掉了（否则下面"新增 1"可能恒真）',
+      rm.ok === true && rm.left === n0 - 1, { victim, victimName, rm });
+
+    await clearToasts();
+    await click('#btn-import-index', '再点「导入工程索引」（把摘掉的那条补回来）');
+    await wait(1000);
+    const tImp2 = await toasts();
+    const back = await js('S.projects.some(p => p.id === ' + JSON.stringify(victim) + ')');
+    add('★ 导入把摘掉的那条补回来：提示"新增 1"且工程真的回到左栏',
+      tImp2.includes('新增 1 个工程') && back === true, { tImp2, back });
+
+    // 反向对照：关掉设置后同一个按钮必须不可见 —— 否则上面那条"可点"没有区分度
+    await js("(() => { closeSettings(); return true; })()");
+    await wait(400);
+    const ebHidden = await probe('#btn-export-index');
+    add('对照：关掉设置后同一个按钮不可见（证明可点性断言有区分度）',
+      ebHidden.found === true && ebHidden.visible === false, ebHidden);
+  } catch (e) {
+    add('设置里的工程索引导出/导入', false, String((e && e.message) || e));
+  }
+
   // ---- 13. 滚轮事件真的送达页面 ----
   // ⚠️ 屏幕外模式下**直接跳过**：屏幕外窗口的合成帧率极低，滚轮根本合成不出来，
   //    干等只会把整场测试拖到超时（实测踩过）。要验这两条请跑 npm run test:mouse:visible。
