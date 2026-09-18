@@ -65,16 +65,17 @@ const MODULES = {
   python: { id: 'python', label: 'Python 执行', tools: ['run_python'] },
   web: { id: 'web', label: '联网抓取/搜索', tools: ['web_fetch', 'web_search'] },
   skills: { id: 'skills', label: '技能库', tools: ['list_skills', 'read_skill'] },
+  office: { id: 'office', label: 'Office 文档', tools: ['validate_document', 'render_document'] },
   checkpoints: { id: 'checkpoints', label: '检查点/回滚', tools: [] },
   compaction: { id: 'compaction', label: '上下文压缩', tools: [] },
   reviewer: { id: 'reviewer', label: '命令审批子会话', tools: [] },
 };
 
 const PROGRAMS = [
-  { id: 'omni', label: 'Omni', description: '通用全能：文件、终端、Python、联网、技能、检查点、压缩', prompt: 'omni', modules: ['fs', 'shell', 'python', 'web', 'skills', 'checkpoints', 'compaction', 'reviewer'] },
-  { id: 'coder', label: 'Coder', description: '编码导向：文件、终端、Python、技能、检查点、压缩', prompt: 'coder', modules: ['fs', 'shell', 'python', 'skills', 'checkpoints', 'compaction', 'reviewer'] },
-  { id: 'coder-safe', label: 'Coder（每次都问）', description: '编码导向，但所有写/执行操作都要人工确认', prompt: 'coder', modules: ['fs', 'shell', 'python', 'skills', 'checkpoints', 'compaction'], approvalOverride: 'always-ask' },
-  { id: 'researcher', label: 'Researcher', description: '研究导向：联网抓取/搜索、文件读写、技能', prompt: 'researcher', modules: ['fs', 'web', 'skills', 'compaction'] },
+  { id: 'omni', label: 'Omni', description: '通用全能：文件、终端、Python、联网、技能、Office 文档、检查点、压缩', prompt: 'omni', modules: ['fs', 'shell', 'python', 'web', 'skills', 'office', 'checkpoints', 'compaction', 'reviewer'] },
+  { id: 'coder', label: 'Coder', description: '编码导向：文件、终端、Python、技能、Office 文档、检查点、压缩', prompt: 'coder', modules: ['fs', 'shell', 'python', 'skills', 'office', 'checkpoints', 'compaction', 'reviewer'] },
+  { id: 'coder-safe', label: 'Coder（每次都问）', description: '编码导向，但所有写/执行操作都要人工确认', prompt: 'coder', modules: ['fs', 'shell', 'python', 'skills', 'office', 'checkpoints', 'compaction'], approvalOverride: 'always-ask' },
+  { id: 'researcher', label: 'Researcher', description: '研究导向：联网抓取/搜索、文件读写、技能、Office 文档', prompt: 'researcher', modules: ['fs', 'web', 'skills', 'office', 'compaction'] },
   { id: 'chat', label: 'Chat', description: '纯聊天：只带联网抓取，不动文件', prompt: 'chat', modules: ['web', 'compaction'] },
   { id: 'blank', label: 'Blank', description: '空白会话：不带任何工具', prompt: 'chat', modules: [] },
 ];

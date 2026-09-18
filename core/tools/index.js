@@ -6,8 +6,9 @@ const shellTools = require('./shell');
 const pythonTools = require('./python');
 const webTools = require('./web');
 const skillTools = require('./skills');
+const officeTools = require('./office');
 
-const ALL = [...fsTools.tools, ...shellTools.tools, ...pythonTools.tools, ...webTools.tools, ...skillTools.tools];
+const ALL = [...fsTools.tools, ...shellTools.tools, ...pythonTools.tools, ...webTools.tools, ...skillTools.tools, ...officeTools.tools];
 
 const byAlias = new Map();
 const byModule = new Map();

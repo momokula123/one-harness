@@ -142,6 +142,14 @@ async function main() {
   const schemas = tools.schemasFor(['read_file_lines', 'write_file']);
   check('按别名生成 schema', schemas.length === 2 && schemas[0].type === 'function');
   check('工具数量 ' + tools.ALL.length, tools.ALL.length >= 12);
+  // office 工具与引擎是绑死的：引擎在就 2 个，引擎不在就必须一个都不注册。
+  // 后者才是真正要守的不变式 —— 「注册了但必然失败」的工具会把模型带进重试死循环。
+  const officeMod = require('../core/tools/office');
+  const officeCount = tools.ALL.filter((t) => t.module === 'office').length;
+  check(
+    `office 工具与引擎一致（引擎${officeMod.engineUsable() ? '在' : '不在'}，注册 ${officeCount} 个）`,
+    officeCount === (officeMod.engineUsable() ? 2 : 0),
+  );
 
   console.log('\n3) 风险分类器');
   check('ls 是 low', classifyCommand('ls -la').risk === 'low');

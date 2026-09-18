@@ -28,7 +28,7 @@
     "productName": "One Harness",
     "copyright": "Copyright © 2026 momokula123",
     "electronDist": "node_modules/electron/dist",
-    "asar": true,
+    "asar": false,
     "compression": "maximum",
     "directories": {
       "output": "dist",
@@ -52,5 +52,9 @@
       ],
       "icon": "assets/icon.ico"
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/libreoffice-kit": "^0.0.1",
+    "@hyzyla/pdfium": "^2.1.13"
   }
 }
