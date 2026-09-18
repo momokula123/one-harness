@@ -411,6 +411,30 @@ pre { margin: 0; }
 .composer-actions { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .composer-actions .spacer { flex: 1; min-width: 0; }
 
+/* ---------- 输入区：拖进来的附件（本地复制，不上传） ---------- */
+/* 视觉复用工具卡上的 .file-chip：同一套底色 / 圆角 / 字号，只是多了个常显的 ×。
+   没有附件时整行是 .hidden，不占高度 —— 拖进东西不会把输入框顶下去。 */
+.composer-atts { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 6px; }
+.att-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 340px;
+  padding: 2px 4px 2px 5px; border-radius: 6px; font-size: 11px;
+  background: var(--bg-3); border: 1px solid transparent; color: var(--text-2);
+}
+.att-chip .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-chip .meta { flex: none; font-size: 10.5px; color: var(--text-3); }
+.att-chip .ic { flex: none; width: 12px; height: 12px; color: var(--text-3); }
+.att-chip .x {
+  flex: none; width: 15px; height: 15px; padding: 0; border: none; border-radius: 4px;
+  background: transparent; color: var(--text-3);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.att-chip .x:hover { background: var(--bg-4); color: var(--text); }
+.att-chip.busy { opacity: .55; }
+.att-chip.bad { background: var(--danger-soft); color: var(--danger); }
+.att-chip.bad .meta, .att-chip.bad .ic, .att-chip.bad .ic svg, .att-chip.bad .x { color: var(--danger); }
+/* 真拖着文件悬在输入框上时给点反馈，否则用户不知道该往哪儿放 */
+.composer-box.drop-hot { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(21, 93, 252, .07); }
+
 .round-btn {
   width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); background: #fff;
   border-radius: 50%; color: var(--text-2);

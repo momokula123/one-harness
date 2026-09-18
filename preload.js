@@ -1,6 +1,6 @@
 'use strict';
 // 上下文隔离下的安全桥：渲染层只能看到下面这些方法
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 
@@ -49,6 +49,15 @@ contextBridge.exposeInMainWorld('hatch', {
   },
   fs: {
     readText: (input) => invoke('fs:readText', input),
+  },
+  // 拖进来的文件。渲染层**拿不到**它的本地路径 —— Electron 32 起 File.path 已被移除
+  // （webUtils.getPathForFile 是唯一的替代品，而它只能在 preload 里用）。
+  // 所以"拖入 → 复制进工作目录"这条路必须经过这里：渲染层问路径，主进程负责搬。
+  files: {
+    pathFor: (file) => {
+      try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
+    },
+    attach: (input) => invoke('files:attach', input),
   },
   // 无边框窗口的自绘按钮
   win: {

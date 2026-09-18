@@ -242,10 +242,19 @@ function copyFileIfExists(src, dst) {
   return true;
 }
 
+// 同名就往后加 -1 / -2 …，**永不覆盖**已有文件。
+// 两处在用：office 工具的产物落盘（core/tools/office.js）、拖入的附件复制进工作目录（main.js）。
+function uniquePath(dir, base, ext) {
+  let p = path.join(dir, base + ext);
+  for (let i = 1; fs.existsSync(p); i++) p = path.join(dir, `${base}-${i}${ext}`);
+  return p;
+}
+
 module.exports = {
   ROOT, APP_ROOT, DATA_DIR, PROJECTS_DIR, SETTINGS_FILE, DEFAULT_SETTINGS,
   init, ensureDir, readJson, writeJsonAtomic, deepMerge, getSettings, saveSettings,
   newId, shortId, listProjects, createProject, getProject, updateProject, deleteProject,
+  uniquePath,
   projectDeleteInfo, projectDir,
   listSessions, loadSession, saveSession, sessionFile, copyFileIfExists,
 };

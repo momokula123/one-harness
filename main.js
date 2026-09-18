@@ -767,7 +767,9 @@ function registerIpc() {
       // 之后 sessions:update 应该继续走磁盘那份。
       liveSessions.delete(liveKey(projectId, sessionId));
     });
-    return { started: true, meta: sessionMeta(s), transcript: sessionLib.renderTranscript(s) };
+    // body 回给渲染层：界面上那条"已发出"的本地回声要和真正发出去的字节一致，
+    // 而拼接规则只应该有一处实现（就是上面这行）—— 别让渲染层再抄一遍。
+    return { started: true, body, meta: sessionMeta(s), transcript: sessionLib.renderTranscript(s) };
   });
   ipcMain.handle('chat:stop', (_e, { sessionId }) => {
     const ok = agent.stop(sessionId);
@@ -822,6 +824,37 @@ function registerIpc() {
       return { ok: true, text: text.length > 200000 ? text.slice(0, 200000) + '\n…[截断]' : text, size: buf.length };
     } catch (e) {
       return { ok: false, error: e.message };
+    }
+  });
+  // 拖进来的文件：搬一份进这个会话的工作目录，把**相对路径**还给渲染层。
+  // 为什么非搬不可：core/tools/fs.js 的 resolveIn() 拒绝工作目录外的路径
+  // （实测把 Downloads 下的绝对路径交给文档工具，直接判「路径越界」）。
+  // 所以拖入的语义 = 本地复制（不上传、不联网），落点就是 session.workingDir。
+  ipcMain.handle('files:attach', (_e, { projectId, sessionId, absPath }) => {
+    try {
+      const s = loadSession(projectId, sessionId);
+      const root = s.workingDir;
+      if (!root) return { ok: false, error: '这个会话没有工作目录，先在项目里选一个文件夹' };
+      const src = path.resolve(String(absPath || ''));
+      const st = fs.statSync(src); // 不存在会抛，下面统一兜成文案
+      if (st.isDirectory()) return { ok: false, error: '这是个文件夹，一次拖一个文件进来' };
+      const rel0 = path.relative(root, src);
+      const inside = rel0 !== '' && !rel0.startsWith('..') && !path.isAbsolute(rel0);
+      // 本来就在工作目录里 → 不复制，直接用（拖一次就多一份副本反而脏）
+      const dest = inside ? src : store.uniquePath(root, path.basename(src, path.extname(src)), path.extname(src));
+      if (!inside) {
+        store.ensureDir(root);
+        fs.copyFileSync(src, dest);
+      }
+      const rel = path.relative(root, dest).split(path.sep).join('/');
+      runlog.log('file.attach', { sessionId, from: src, to: dest, copied: !inside, bytes: st.size });
+      return { ok: true, rel, name: path.basename(dest), copied: !inside, bytes: fs.statSync(dest).size, from: src };
+    } catch (e) {
+      const msg = e.code === 'ENOENT' ? '源文件不在了（可能已被移动或删除）'
+        : e.code === 'EPERM' || e.code === 'EACCES' ? '没权限读写（源文件被占用，或工作目录不可写）'
+        : e.code === 'ENOSPC' ? '磁盘空间不够'
+        : (e.message || String(e));
+      return { ok: false, error: msg };
     }
   });
   ipcMain.handle('shell:openPath', (_e, target) => (bgBlocked('打开路径 ' + target) ? '' : shell.openPath(target)));

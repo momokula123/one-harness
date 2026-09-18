@@ -73,6 +73,10 @@ const S = {
   session: null,
   meta: null,
   transcript: [],
+  // 拖进输入框、等这条消息一起发出去的附件。
+  // 每项：{ key, name, rel, from, state:'busy'|'ok'|'bad', note }
+  // 归属是**会话**（复制目标就是 session.workingDir），所以换会话必须清空。
+  atts: [],
   running: false,
   // 正在跑的会话 id 集合。内核的 running 锁本来就是**按会话**记的，
   // 而 agent:event 又是按会话过滤的：如果界面只用一个全局布尔 S.running，
@@ -1133,6 +1137,10 @@ async function openNextInProject(projectId) {
 function applyLoaded(r) {
   S.meta = r.meta;
   S.transcript = r.transcript || [];
+  // 附件是**按会话**存在的（复制目标就是那个会话的工作目录），换会话必须清空，
+  // 否则会把 A 会话的文件名发到 B 会话里去。
+  S.atts = [];
+  renderAtts();
   syncRunning(); // 换了会话：S.running 是按当前会话算的派生值，必须重算
   renderTop();
   renderTranscript();
@@ -1634,18 +1642,130 @@ function scheduleLive() {
   });
 }
 
+// ---------------- 拖进来的附件（本地复制，不是上传） ----------------
+// 机制：drop 事件给的 File **问不出本地地址**（Electron 32 起 File.path 已被移除），
+// 只能经 preload 的 webUtils.getPathForFile 拿；拿到后由主进程复制一份进这个会话的
+// 工作目录 —— 因为工具只认工作目录内的路径，外面的一律"路径越界"。
+// 复制后的相对路径跟着消息一起发出去（main.js 拼成 [附件] xxx 行），模型据此调工具。
+function renderAtts() {
+  const box = $('composer-atts');
+  if (!box) return;
+  box.classList.toggle('hidden', S.atts.length === 0);
+  box.innerHTML = S.atts.map((a) => {
+    const cls = 'att-chip' + (a.state === 'busy' ? ' busy' : a.state === 'bad' ? ' bad' : '');
+    const meta = a.state === 'busy' ? '复制中…'
+      : a.state === 'bad' ? (a.note || '没能复制')
+        : a.copied ? '已复制入项目' : '已在工作目录';
+    const tip = a.state === 'bad' ? (a.note || '') : (a.from || '');
+    return `<span class="${cls}" title="${esc(tip)}">` +
+      `<span class="ic" data-ic="${fileIconFor(a.name)}"></span>` +
+      `<span class="nm">${esc(a.name)}</span>` +
+      `<span class="meta">${esc(meta)}</span>` +
+      `<button class="x" data-ic="x" data-att-drop="${esc(a.key)}" title="移除"></button>` +
+      `</span>`;
+  }).join('');
+  hydrateIcons(box);
+}
+
+function removeAtt(key) {
+  S.atts = S.atts.filter((a) => a.key !== key);
+  renderAtts();
+}
+
+async function attachFiles(fileList) {
+  const files = [...(fileList || [])];
+  if (!files.length) return;
+  if (!S.sessionId || !S.projectId) { toast('先打开一个会话，再往输入框里拖文件', 'err'); return; }
+  // 先全部按"复制中"占位：拖完立刻有条，不用等磁盘
+  const jobs = files.map((f) => {
+    const it = { key: 'att-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: f.name, state: 'busy' };
+    S.atts.push(it);
+    return { it, f };
+  });
+  renderAtts();
+
+  // 串行复制：并发拷几个大文件会把磁盘打满，小条的出现顺序也会和拖入顺序对不上
+  for (const { it, f } of jobs) {
+    let abs = '';
+    try { abs = api.files.pathFor(f) || ''; } catch { abs = ''; }
+    if (!abs) {
+      it.state = 'bad';
+      it.note = '问不到本地地址';
+      it.from = '网页里直接拖出来的文件没有本地地址，先存到磁盘再拖进来。';
+      renderAtts();
+      continue;
+    }
+    it.from = abs;
+    let r;
+    try {
+      r = await api.files.attach({ projectId: S.projectId, sessionId: S.sessionId, absPath: abs });
+    } catch (e) {
+      r = { ok: false, error: e.message };
+    }
+    if (r && r.ok) {
+      it.state = 'ok';
+      it.rel = r.rel;
+      it.name = r.name;
+      it.copied = r.copied;
+      it.bytes = r.bytes;
+    } else {
+      it.state = 'bad';
+      it.note = (r && r.error) || '复制失败';
+      it.from = it.note + '（源文件：' + abs + '）';
+    }
+    renderAtts();
+  }
+}
+
+/** 拖拽：整个窗口都接住，但只有落在输入框里才算附件。
+ *  必须 preventDefault —— 不然 Chromium 会执行默认动作：把窗口导航到那个文件，
+ *  文本类文件会直接把整个界面顶掉（没有返回入口，只能重启）。 */
+function bindDrops() {
+  const box = document.querySelector('.composer-box');
+  const clear = () => { if (box) box.classList.remove('drop-hot'); };
+  window.addEventListener('dragover', (e) => { e.preventDefault(); });
+  window.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    if (box && (e.target === box || box.contains(e.target))) box.classList.add('drop-hot');
+  });
+  window.addEventListener('dragleave', (e) => {
+    if (box && !box.contains(e.relatedTarget)) clear();
+  });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault(); // 先拦默认动作，再谈别的
+    clear();
+    const files = e.dataTransfer && e.dataTransfer.files;
+    const inside = !!box && (e.target === box || box.contains(e.target));
+    if (!inside) {
+      if (files && files.length) toast('把文件拖进输入框里', '');
+      return;
+    }
+    if (files && files.length) attachFiles(files);
+  });
+}
+
 // ---------------- 发送 / 停止 ----------------
 async function send() {
   const input = $('input');
   const text = input.value.trim();
   if (!text || !S.sessionId || S.running) return;
   input.value = '';
-  S.transcript.push({ kind: 'user', id: 'pending-' + Date.now(), ts: Date.now(), text });
+  const echo = { kind: 'user', id: 'pending-' + Date.now(), ts: Date.now(), text };
+  S.transcript.push(echo);
   renderTranscript();
+  // 只有复制成功的附件才跟着走：坏掉的（问不到地址 / 没权限）不进消息，界面上留着红条
+  const atts = S.atts.filter((a) => a.state === 'ok').map((a) => a.rel);
+  S.atts = [];
+  renderAtts();
   S.runningIds.add(S.sessionId);
   syncRunning();
   try {
-    await api.chat.send({ projectId: S.projectId, sessionId: S.sessionId, text });
+    const r = await api.chat.send({ projectId: S.projectId, sessionId: S.sessionId, text, attachments: atts });
+    // 用主进程真正发出去的那份 body 覆盖本地回声（[附件] xxx 那几行只允许有一处拼接规则）
+    if (r && typeof r.body === 'string') {
+      echo.text = r.body;
+      renderTranscript();
+    }
   } catch (e) {
     S.runningIds.delete(S.sessionId);
     syncRunning();
@@ -2536,6 +2656,13 @@ function bind() {
     } else if (e.key === 'Escape') {
       hideNewSessionMenu();
     }
+  });
+
+  // 拖进来的文件：整个窗口接住 drag/drop，但落在输入框里才算附件（见 bindDrops）
+  bindDrops();
+  $('composer-atts').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-att-drop]');
+    if (b) removeAtt(b.getAttribute('data-att-drop'));
   });
 
   // 输入框左边的 +：弹出「新建会话」菜单

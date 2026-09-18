@@ -13,6 +13,8 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { resolveIn, toRel } = require('./fs');
+// 同名产物往后加 -1/-2、永不覆盖 —— 这条语义只允许一处实现（拖入的附件复制也用它）
+const { uniquePath } = require('../store');
 
 const KIT = '@deepseek-ai/libreoffice-kit';
 const PDFIUM = '@hyzyla/pdfium';
@@ -61,12 +63,6 @@ function disposeConverter() {
 process.once('exit', disposeConverter);
 
 // ---- 输出路径：引擎拒绝覆盖已存在的文件，所以先找一个空位 ----
-function uniquePath(dir, base, ext) {
-  let p = path.join(dir, base + ext);
-  for (let i = 1; fs.existsSync(p); i++) p = path.join(dir, `${base}-${i}${ext}`);
-  return p;
-}
-
 function extOf(absPath) {
   return path.extname(absPath).toLowerCase();
 }
