@@ -1,14 +1,24 @@
 'use strict';
-// 技能库：SKILL.md（带 frontmatter）按需加载，避免把长文档常驻上下文
+// 技能库：SKILL.md（带 frontmatter）分两层 —— intro 常驻正文，outro 按需索引
 
 const fs = require('fs');
 const path = require('path');
 const store = require('../store');
 
-function skillDirs() {
-  // APP_ROOT = 随程序分发的只读技能（打包后在 app.asar 内，Electron 可透明读取）
-  // DATA_DIR/skills = 用户自己的技能，绿色版里就在 exe 旁边，可增删改
-  return [path.join(store.APP_ROOT, 'skills'), path.join(store.DATA_DIR, 'skills')];
+// 目录约定就是技能与程序之间的全部契约：程序只认 intro / outro 两个目录名，
+// 不认识任何具体技能。放进 intro = 正文常驻系统提示；放进 outro = 只进索引
+// （名字 + 一句话描述），模型判断相关后自己 read_skill 读全文。
+function skillSources() {
+  // APP_ROOT/skills = 随程序分发的只读技能（打包后在 app.asar 内，Electron 可透明读取），天然属于 intro
+  // DATA_DIR/skills/intro = 用户放入的规范类技能
+  // DATA_DIR/skills/outro = 用户放入的按需技能
+  // DATA_DIR/skills/<name> = 未分类的历史布局，按 outro 处理
+  return [
+    { dir: path.join(store.APP_ROOT, 'skills'), tier: 'intro' },
+    { dir: path.join(store.DATA_DIR, 'skills', 'intro'), tier: 'intro' },
+    { dir: path.join(store.DATA_DIR, 'skills', 'outro'), tier: 'outro' },
+    { dir: path.join(store.DATA_DIR, 'skills'), tier: 'outro' },
+  ];
 }
 
 function parseFrontmatter(text) {
@@ -24,10 +34,11 @@ function parseFrontmatter(text) {
 
 function listSkills() {
   const out = [];
-  for (const dir of skillDirs()) {
-    if (!fs.existsSync(dir)) continue;
-    for (const name of fs.readdirSync(dir)) {
-      const file = path.join(dir, name, 'SKILL.md');
+  const seen = new Set();
+  for (const src of skillSources()) {
+    if (!fs.existsSync(src.dir)) continue;
+    for (const name of fs.readdirSync(src.dir)) {
+      const file = path.join(src.dir, name, 'SKILL.md');
       if (!fs.existsSync(file)) continue;
       let parsed;
       try {
@@ -35,13 +46,17 @@ function listSkills() {
       } catch {
         continue;
       }
+      const key = String(parsed.meta.name || name).toLowerCase();
+      if (seen.has(key)) continue; // 先扫到的优先：内置技能不会被用户同名技能顶掉
+      seen.add(key);
       out.push({
         name: parsed.meta.name || name,
         displayName: parsed.meta['display-name'] || parsed.meta.displayName || name,
         description: parsed.meta.description || '',
         userInvocable: parsed.meta['user-invocable'] !== 'false',
+        tier: src.tier,
         path: file,
-        dir,
+        dir: path.dirname(file),
       });
     }
   }
@@ -53,15 +68,54 @@ function findSkill(name) {
   return listSkills().find((s) => s.name.toLowerCase() === key || path.basename(path.dirname(s.path)).toLowerCase() === key) || null;
 }
 
-// 注入系统提示的索引（只有名字 + 一句话描述）
+// intro 层常驻正文的总预算（字符）。超出预算的技能自动降级为"只留标题 + 提示"，
+// 避免技能库自己把上下文吃光。
+const INTRO_MAX_CHARS = 24000;
+
+// 注入系统提示的常驻正文（intro 层全文）
+function introText() {
+  const list = listSkills().filter((s) => s.tier === 'intro');
+  if (!list.length) return null;
+  const parts = [];
+  let used = 0;
+  for (const s of list) {
+    let body = '';
+    try {
+      body = parseFrontmatter(fs.readFileSync(s.path, 'utf8')).body.trim();
+    } catch {
+      continue;
+    }
+    if (!body) continue;
+    const head = `## ${s.name}`;
+    if (used + body.length > INTRO_MAX_CHARS) {
+      parts.push(`${head}\n(本条超出常驻预算，需要时用 read_skill 读取全文)`);
+      continue;
+    }
+    used += body.length;
+    parts.push(`${head}\n${body}`);
+  }
+  if (!parts.length) return null;
+  return (
+    '# Skills — always loaded\n' +
+    '以下规范已常驻，直接遵守，不必再 read_skill。\n\n' +
+    parts.join('\n\n')
+  );
+}
+
+// 注入系统提示的索引（outro 层：只有名字 + 一句话描述）
 function skillsIndex() {
-  const all = listSkills();
+  const all = listSkills().filter((s) => s.tier === 'outro');
   if (!all.length) return null;
   return (
-    '# Skills\n' +
+    '# Skills — on demand\n' +
     'Reusable procedures are stored as skills. When a task matches one, call read_skill to load its full instructions before working.\n' +
     all.map((s) => `- ${s.name}: ${s.description || '(无描述)'}`).join('\n')
   );
+}
+
+// 系统提示里技能相关内容的全部 = 常驻正文 + 按需索引
+function systemSuffix() {
+  return [introText(), skillsIndex()].filter(Boolean).join('\n\n') || null;
 }
 
 const listSkillsTool = {
@@ -74,7 +128,9 @@ const listSkillsTool = {
   async run() {
     const all = listSkills();
     if (!all.length) return '当前没有任何技能。可以在「技能」面板里新建一个。';
-    return all.map((s) => `- ${s.name}（${s.displayName}）：${s.description || '(无描述)'}\n  路径：${s.path}`).join('\n');
+    return all
+      .map((s) => `- ${s.name}（${s.displayName}）[${s.tier === 'intro' ? '已常驻' : '按需'}]：${s.description || '(无描述)'}\n  路径：${s.path}`)
+      .join('\n');
   },
 };
 
@@ -100,4 +156,4 @@ const readSkillTool = {
   },
 };
 
-module.exports = { tools: [listSkillsTool, readSkillTool], listSkills, findSkill, skillsIndex, parseFrontmatter, skillDirs };
+module.exports = { tools: [listSkillsTool, readSkillTool], listSkills, findSkill, skillsIndex, introText, systemSuffix, parseFrontmatter, skillSources };

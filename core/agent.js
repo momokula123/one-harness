@@ -149,12 +149,12 @@ class Agent {
         steps++;
 
         // 1) 压缩（需要时）
-        let messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.skillsIndex() });
+        let messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix() });
         if (session.modules.includes('compaction')) {
           const c = await compact.maybeCompact(settings, session, messages, { signal: ac.signal });
           if (c.compacted) {
             this.emit({ type: 'compaction', sessionId: session.id, dropped: c.dropped });
-            messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.skillsIndex() });
+            messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix() });
           }
         }
 
