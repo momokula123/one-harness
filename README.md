@@ -4,16 +4,15 @@
 
 跑在本机的桌面 agent harness。接 OpenAI 兼容端点，让模型读写文件、执行命令、联网取资料。
 
-Electron + 纯 JS/HTML/CSS，无构建步骤。
-
 ![One Harness 界面](assets/screenshot.png)
 
-## 快速开始
+## 下载
 
-```bash
-npm install
-npm start
-```
+到 [Releases](../../releases) 下载 `One-Harness-<版本>-win-x64.zip`，解压后双击 `One Harness.exe` 即用。
+
+免安装绿色版：不改注册表、不要管理员权限，数据落在 exe 旁边，整个文件夹搬到哪数据跟到哪（要换机器，拷走文件夹就行）。系统要求 Windows x64。
+
+## 首次使用
 
 需要一个 OpenAI 兼容端点，在「设置 → 常规」里填 Base URL、API Key、模型名，点「拉取模型列表」确认连通。
 
@@ -25,8 +24,8 @@ npm start
 
 - **事件日志**：追加式（`id` / `previousId` 链），支持从任意消息分叉出独立历史线
 - **程序预设**：6 个（Omni / Coder / Coder-safe / Researcher / Chat / Blank）
-- **能力模块**：8 个（文件 / Shell / Python / 联网 / 技能 / 检查点 / 压缩 / 评审），
-  模块决定暴露哪些工具，共 12 个工具
+- **能力模块**：9 个（文件 / Shell / Python / 联网 / 技能 / Office 文档 / 检查点 / 压缩 / 评审），
+  模块决定暴露哪些工具，共 14 个工具
 - **审批闸门**：三层 —— 硬拒绝清单 → 正则风险分级 → 评审子会话
 - **检查点**：写文件前自动存快照（内容寻址 `blobs/<sha256>`），可按消息回滚、可单文件恢复
 - **上下文压缩**：接近容量上限时自动压缩，阈值 0.9375
@@ -79,24 +78,6 @@ npm start
 - **内置浏览器**：guest 进程不给 preload、无 node 集成、只允许 http/https/file。
 - **数据全在本机**：会话、检查点、设置都在 `data/`，没有外部服务。
 
-## 测试
-
-```bash
-npm test                    # 下面四层跑一遍
-npm run smoke               # 97 项：假模型服务跑通整轮，不需要真模型
-npm run test:ui             # 26 项：真起 Electron 点界面，断言"点了要有反应"
-npm run test:mouse          # 45 项：真实鼠标输入，断言"这个控件真人点得到"
-npm run test:approval-mode  # 10 项：运行中切审批模式必须对下一次调用生效
-npm run test:features       # 131 项：真模型端到端 + 全部面板走查
-npm run launch-check        # 主进程 + preload + 渲染层能否起来
-```
-
-`test:ui` 和 `test:mouse` 分工不同：前者用 `el.click()`，能覆盖业务链路但**绕过命中测试**；
-后者走 Chromium 命中测试发真实输入，**"按钮点不到"这类问题只有它能测出来**，
-并附带一遍全量体检（枚举每个可见交互元素做命中测试）。
-
-自动化跑法都不显示窗口。要出图才设 `HATCH_SHOT_VISIBLE=1`。
-
 ## 已知限制
 
 - 未做 RAG、插件沙箱、MCP
@@ -105,16 +86,13 @@ npm run launch-check        # 主进程 + preload + 渲染层能否起来
 - 目前以绿色版分发（解压即用），未做安装程序
 - 界面只有浅色主题
 
-## 打包（绿色版）
+## 从源码运行
 
-`electron-builder` 出免安装文件夹，压缩成 `dist/One-Harness-<版本>-win-x64.zip`，解压双击 `One Harness.exe` 即用，数据落在 exe 旁边、跟文件夹一起搬走。
-
-**铁律：每次出包必须先升 `package.json` 的 `version`**，包名里的版本由 `build.artifactName` 自动带出，不靠人记。理由很具体——曾经出现过"代码改了、包还是旧版本号"，发出去的包里其实是改动前的代码，光看文件名完全看不出来。程序启动时会把自己的版本写进 `logs/run-YYYY-MM-DD.log` 的 `app.start` 事件，用户贴一行日志就能确定他跑的是哪一版。
-
-打包注意：输出目录**必须换新的**（`-c.directories.output=dist/<版本>`）。原地重打会先清空旧的输出目录，这一步在受限环境下会被批量删除守卫拦下而失败：
+Electron + 纯 JS/HTML/CSS，无构建步骤：
 
 ```bash
-node node_modules/electron-builder/cli.js --win --dir -c.directories.output=dist/$(node -p "require('./package.json').version")
+npm install
+npm start
 ```
 
-出包顺序：升版本 → `npm run smoke` 全绿 → 打包 → **在打包后的树里真跑一次关键功能** → 确认没有 `data/` `userdata/` `logs/` 残留（尤其翻一眼 `settings.json` 里的 apiKey / 私有 `baseUrl`）→ 压缩 → 核对 zip 条目与字节。
+改完源码重启应用即可生效，改界面不用编译。
