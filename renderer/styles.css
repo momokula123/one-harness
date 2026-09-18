@@ -432,6 +432,28 @@ pre { margin: 0; }
 .att-chip.busy { opacity: .55; }
 .att-chip.bad { background: var(--danger-soft); color: var(--danger); }
 .att-chip.bad .meta, .att-chip.bad .ic, .att-chip.bad .ic svg, .att-chip.bad .x { color: var(--danger); }
+/* 图片长边超过 1568 时只提醒、不拦 —— 服务端本来也会缩，传大的只白花字节和 token */
+.att-chip.warn { background: var(--warn-soft); color: var(--warn); }
+.att-chip.warn .meta, .att-chip.warn .ic, .att-chip.warn .ic svg { color: var(--warn); }
+
+/* 设置里的勾选框（目前只有「支持图片输入」一个）。
+   没有引组件库，就用原生 input + accent-color，视觉跟着主题色走。 */
+.chk { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.chk input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+
+/* 用户气泡里的图片缩略图。transcript 只给相对路径，像素是异步取回来再填的，
+   所以先有框、后有图（loading/gone 两态也要能看）。 */
+.img-thumb {
+  width: 168px; height: 108px; margin-bottom: 6px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--bg-3);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; font-size: 10.5px; color: var(--text-3);
+  padding: 4px; text-align: center; word-break: break-all;
+}
+.img-thumb.ready { cursor: pointer; border-color: var(--line); }
+.img-thumb.ready:hover { border-color: var(--accent); }
+.img-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.img-thumb.gone { border-style: dashed; background: var(--danger-soft); color: var(--danger); }
 /* 真拖着文件悬在输入框上时给点反馈，否则用户不知道该往哪儿放 */
 .composer-box.drop-hot { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(21, 93, 252, .07); }
 

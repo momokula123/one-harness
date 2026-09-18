@@ -3,6 +3,7 @@
 
 const model = require('./model');
 const sessionLib = require('./session');
+const images = require('./images');
 
 const COMPACT_SYSTEM = `You compress agent transcripts so work can continue in a smaller context window.
 
@@ -17,10 +18,30 @@ Drop: chit-chat, repeated tool output, intermediate reasoning that led nowhere, 
 
 Write plain Markdown with short sections. Never invent facts that are not in the transcript.`;
 
+/**
+ * 估算一组消息占多少 token。
+ * `content` 可能是字符串（纯文本消息），也可能是数组（带图的消息）——
+ * 数组这一支**必须**单独处理：`estimateTokens` 会把整个数组 `String()` 成
+ * `[object Object],[object Object]`，于是带图的消息估算值骤降、自动压缩永远不触发，
+ * 上下文一路涨到端点报错为止。这是那种"不报错但静默算错"的坏法，比崩了更难查。
+ */
+function contentTokens(content) {
+  if (Array.isArray(content)) {
+    let n = 0;
+    for (const p of content) {
+      if (!p) continue;
+      if (p.type === 'image_url') n += images.tokensForDataUrl(p.image_url && p.image_url.url);
+      else n += sessionLib.estimateTokens(p.text || '');
+    }
+    return n;
+  }
+  return sessionLib.estimateTokens(content || '');
+}
+
 function estimateMessagesTokens(messages) {
   let n = 0;
   for (const m of messages) {
-    n += sessionLib.estimateTokens(m.content || '');
+    n += contentTokens(m.content);
     if (m.tool_calls) n += sessionLib.estimateTokens(JSON.stringify(m.tool_calls));
   }
   return n;
@@ -37,7 +58,12 @@ function transcriptToText(session, upToTs) {
   for (const e of session.entries) {
     if (upToTs && e.ts > upToTs) break;
     if (e.type === 'message' && e.role === 'user') {
-      lines.push('USER: ' + sessionLib.entryPlainText(e));
+      // 图片只留一行占位符。entryPlainText 只取 text part，图会被无声丢掉 ——
+      // 不崩，但摘要里连"这里曾经有张图"的痕迹都没有，压缩之后模型就再也想不起来
+      // 图里是什么了。宁可留个名字，也不要让历史凭空少一块。
+      const pics = (e.parts || []).filter((p) => p.type === 'image');
+      lines.push('USER: ' + sessionLib.entryPlainText(e)
+        + (pics.length ? `\n  [附图 ${pics.length} 张：${pics.map((p) => p.rel).join('、')}（图片内容不在摘要里）]` : ''));
     } else if (e.type === 'message' && e.role === 'assistant') {
       const text = sessionLib.entryPlainText(e);
       const calls = (e.parts || []).filter((p) => p.type === 'toolCallRequest');

@@ -58,6 +58,9 @@ contextBridge.exposeInMainWorld('hatch', {
       try { return webUtils.getPathForFile(file) || ''; } catch { return ''; }
     },
     attach: (input) => invoke('files:attach', input),
+    // 取一张图的像素（气泡缩略图用）。rel 是工作目录内的相对路径，
+    // 主进程会再校验一次"必须在工作目录内"，渲染层拿不到任意路径的读盘能力。
+    preview: (input) => invoke('files:preview', input),
   },
   // 无边框窗口的自绘按钮
   win: {

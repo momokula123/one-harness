@@ -33,6 +33,10 @@ const DEFAULT_SETTINGS = {
     // （其余名字回车是 404 model_not_found），所以默认写死这个实测可用的。
     // 换端点后如果这个名字不存在，main.js 的 resolveModel 会自动改用端点列表的第一个。
     model: 'deepseek-v4.1-flash',
+    // 这个模型能不能吃图片输入。**只能手勾，探测不出来** —— 实测本机端点的
+    // /v1/models 只回 {id, object}，没有任何能力字段（OpenAI 规范里本来也没有）。
+    // 默认 false：不发图永远不会错，勾错了代价是整轮 400（agent.js 会剥图重发并提示）。
+    supportsVision: false,
     temperature: 0.3,
     maxTokens: -1,
     contextLength: 16384,      // 仅用于上下文占用估算

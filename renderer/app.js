@@ -77,6 +77,11 @@ const S = {
   // 每项：{ key, name, rel, from, state:'busy'|'ok'|'bad', note }
   // 归属是**会话**（复制目标就是 session.workingDir），所以换会话必须清空。
   atts: [],
+  // 气泡缩略图的像素缓存。键是 `项目/会话/相对路径` —— 相对路径只在**某个会话的
+  // 工作目录**里才有意义，两个会话完全可能各有一张 chart.png。
+  // 内容是主进程 files:preview 的原始返回（含 data URL），换会话时清空，
+  // 免得几张图的 base64 一直留在渲染层手里。
+  previewCache: new Map(),
   running: false,
   // 正在跑的会话 id 集合。内核的 running 锁本来就是**按会话**记的，
   // 而 agent:event 又是按会话过滤的：如果界面只用一个全局布尔 S.running，
@@ -1138,8 +1143,10 @@ function applyLoaded(r) {
   S.meta = r.meta;
   S.transcript = r.transcript || [];
   // 附件是**按会话**存在的（复制目标就是那个会话的工作目录），换会话必须清空，
-  // 否则会把 A 会话的文件名发到 B 会话里去。
+  // 否则会把 A 会话的文件名发到 B 会话里去。缩略图缓存同理：键里虽带了会话，
+  // 但换会话后旧的像素再也没有用处，留着只是占内存。
   S.atts = [];
+  S.previewCache.clear();
   renderAtts();
   syncRunning(); // 换了会话：S.running 是按当前会话算的派生值，必须重算
   renderTop();
@@ -1352,6 +1359,59 @@ function renderTop() {
   renderTabs();
 }
 
+// ---------------- 图片缩略图 ----------------
+// 用户拖进来的图，气泡上要看得见。transcript 里只带相对路径，像素要向主进程要
+// （files:preview，主进程会再校验一次"必须在工作目录内"）。
+// 缓存是必要的：每轮 session:update 都会整份重绘转录，不缓存就是每次重绘都把
+// 几张图重新搬一遍 IPC。
+function imgThumb(im) {
+  const rel = im.rel;
+  const pid = S.projectId;
+  const sid = S.sessionId;
+  const key = pid + '/' + sid + '/' + rel;
+  const box = document.createElement('div');
+  box.className = 'img-thumb';
+  box.title = rel;
+
+  const paint = (r) => {
+    if (r && r.ok) {
+      const img = document.createElement('img');
+      img.src = r.dataUrl;
+      img.alt = rel;
+      box.appendChild(img);
+      box.classList.add('ready');
+      box.title = rel + '（' + (r.width && r.height ? r.width + '×' + r.height + ' · ' : '') + '点击用系统程序打开）';
+      box.onclick = () => api.shell.openPath(r.abs);
+    } else {
+      // 图被删/改名/越界：留一个能看懂的占位，不要把整个气泡弄没
+      box.classList.add('gone');
+      box.textContent = '图片打不开';
+      box.title = rel + '：' + ((r && r.error) || '读取失败');
+    }
+  };
+
+  const hit = S.previewCache.get(key);
+  if (hit) { paint(hit); return box; }
+
+  box.classList.add('loading');
+  box.textContent = String(rel).split('/').pop();
+  api.files.preview({ projectId: pid, sessionId: sid, rel })
+    .then((r) => {
+      const res = r || { ok: false, error: '主进程没有返回' };
+      S.previewCache.set(key, res);
+      box.classList.remove('loading');
+      box.textContent = '';
+      paint(res);
+    })
+    .catch((e) => {
+      box.classList.remove('loading');
+      box.classList.add('gone');
+      box.textContent = '图片打不开';
+      box.title = rel + '：' + ((e && e.message) || e);
+    });
+  return box;
+}
+
 // ---------------- 转录渲染 ----------------
 function renderTranscript() {
   const box = $('transcript');
@@ -1368,7 +1428,13 @@ function renderTranscript() {
       if (row.hidden) continue;
       const d = document.createElement('div');
       d.className = 'row user';
-      d.innerHTML = `<div class="bubble md">${mdToHtml(row.text)}</div>`;
+      // 缩略图放在文字上方，点击用系统程序打开原图。
+      // 只在这里放一个空壳，像素是异步去主进程要的（transcript 里只有相对路径）。
+      for (const im of row.images || []) d.appendChild(imgThumb(im));
+      // 用 insertAdjacentHTML 而不是 `d.innerHTML +=` —— 后者会把已经 append 进去的
+      // 缩略图节点序列化再重新解析一遍，等于把刚建好的元素换成了新对象，
+      // 于是"异步取回像素之后填进那个元素"这句话就落到了已经被丢弃的节点上（画面永远空着）。
+      if (row.text) d.insertAdjacentHTML('beforeend', `<div class="bubble md">${mdToHtml(row.text)}</div>`);
       const bar = document.createElement('div');
       bar.className = 'msg-actions keep';
       bar.appendChild(iconBtn('undo', '回滚到这条消息之前', () => rollbackTo(row.id)));
@@ -1652,11 +1718,22 @@ function renderAtts() {
   if (!box) return;
   box.classList.toggle('hidden', S.atts.length === 0);
   box.innerHTML = S.atts.map((a) => {
-    const cls = 'att-chip' + (a.state === 'busy' ? ' busy' : a.state === 'bad' ? ' bad' : '');
+    const img = a.image;
+    // 图片多给两种状态：读不出来（格式/体积不合格）与"偏大"（长边超 1568，白花 token）
+    const imgWarn = !!(img && img.ok && img.oversize);
+    const imgBad = !!(img && !img.ok);
+    const cls = 'att-chip'
+      + (a.state === 'busy' ? ' busy' : a.state === 'bad' || imgBad ? ' bad' : imgWarn ? ' warn' : '');
     const meta = a.state === 'busy' ? '复制中…'
       : a.state === 'bad' ? (a.note || '没能复制')
-        : a.copied ? '已复制入项目' : '已在工作目录';
-    const tip = a.state === 'bad' ? (a.note || '') : (a.from || '');
+        : imgBad ? (img.error || '图片有问题')
+          : img && img.ok && img.width ? (img.width + '×' + img.height + (img.oversize ? ' · 偏大' : ''))
+            : a.copied ? '已复制入项目' : '已在工作目录';
+    const tip = a.state === 'bad' ? (a.note || '')
+      : imgBad ? (img.error || '')
+        : img && img.ok
+          ? (a.from || '') + '　·　约 ' + img.tokens + ' token/次（每轮都会重发）'
+          : (a.from || '');
     return `<span class="${cls}" title="${esc(tip)}">` +
       `<span class="ic" data-ic="${fileIconFor(a.name)}"></span>` +
       `<span class="nm">${esc(a.name)}</span>` +
@@ -1708,6 +1785,9 @@ async function attachFiles(fileList) {
       it.name = r.name;
       it.copied = r.copied;
       it.bytes = r.bytes;
+      // 图片额外带回来宽高（主进程量的）。小条上显示出来，
+      // 用户才知道自己拖的是一张多大的图 —— 它每轮都会随历史重发。
+      it.image = r.image || null;
     } else {
       it.state = 'bad';
       it.note = (r && r.error) || '复制失败';
@@ -1748,13 +1828,18 @@ function bindDrops() {
 async function send() {
   const input = $('input');
   const text = input.value.trim();
-  if (!text || !S.sessionId || S.running) return;
-  input.value = '';
-  const echo = { kind: 'user', id: 'pending-' + Date.now(), ts: Date.now(), text };
-  S.transcript.push(echo);
-  renderTranscript();
+  if (!S.sessionId || S.running) return;
   // 只有复制成功的附件才跟着走：坏掉的（问不到地址 / 没权限）不进消息，界面上留着红条
   const atts = S.atts.filter((a) => a.state === 'ok').map((a) => a.rel);
+  // 一个字没打但拖了图，也应该能发出去 —— 否则用户拖完图点发送毫无反应，
+  // 只会以为功能坏了（拖入附件本来就是"以图为主"的用法）。
+  if (!text && !atts.length) return;
+  input.value = '';
+  // 回声里先带上图片：缩略图在等模型回复的这段时间就能显示出来。
+  // 主进程返回后会用**真正发出去的那份**覆盖 text（[附件] 行只允许有一处拼接规则）。
+  const echo = { kind: 'user', id: 'pending-' + Date.now(), ts: Date.now(), text, images: atts.map((rel) => ({ rel })) };
+  S.transcript.push(echo);
+  renderTranscript();
   S.atts = [];
   renderAtts();
   S.runningIds.add(S.sessionId);
@@ -1764,6 +1849,7 @@ async function send() {
     // 用主进程真正发出去的那份 body 覆盖本地回声（[附件] xxx 那几行只允许有一处拼接规则）
     if (r && typeof r.body === 'string') {
       echo.text = r.body;
+      if (Array.isArray(r.images)) echo.images = r.images.map((rel) => ({ rel }));
       renderTranscript();
     }
   } catch (e) {
@@ -2269,6 +2355,10 @@ const SETTINGS_SECTIONS = {
         <div class="field"><label>API Key</label><input id="set-apiKey" value="${esc(s.model.apiKey)}" /></div>
         <div class="field"><label>模型</label><input id="set-model" value="${esc(s.model.model)}" list="model-options" /></div>
         <datalist id="model-options">${(S.models || []).map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+        <div class="field">
+          <label class="chk"><input type="checkbox" id="set-vision"${s.model.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
+          <div class="hint">勾上之后，拖进输入框的图片会随消息一起交给模型。端点不会告诉程序"这个模型能不能看图"（/v1/models 只回 id），所以只能在这里声明。勾错了也不至于卡死：程序会剥掉图按纯文本重发一次，并提示你来这里取消勾选。</div>
+        </div>
         <div class="row-inline field">
           <div><label>温度</label><input id="set-temp" type="number" step="0.1" min="0" max="2" value="${esc(s.model.temperature)}" /></div>
           <div><label>上下文长度</label><input id="set-ctx" type="number" step="1024" value="${esc(s.model.contextLength)}" /></div>
@@ -2305,6 +2395,7 @@ const SETTINGS_SECTIONS = {
             baseUrl: $('set-baseUrl').value.trim(),
             apiKey: $('set-apiKey').value,
             model: $('set-model').value.trim(),
+            supportsVision: $('set-vision').checked,
             temperature: Number($('set-temp').value),
             contextLength: Number($('set-ctx').value),
           },

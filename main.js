@@ -7,6 +7,7 @@ const fs = require('fs');
 
 const store = require('./core/store');
 const sessionLib = require('./core/session');
+const images = require('./core/images');
 const tools = require('./core/tools');
 const checkpoints = require('./core/checkpoints');
 const { Agent, sessionEvent, sessionMeta } = require('./core/agent');
@@ -740,16 +741,30 @@ function registerIpc() {
     // 兜底：模型还没定下来（比如启动时端点没通）就先按端点推荐选一个，别把空模型名发出去
     if (!store.getSettings().model.model) await resolveModel();
     const s = loadSession(projectId, sessionId);
-    const body = attachments && attachments.length ? text + '\n\n' + attachments.map((a) => `[附件] ${a}`).join('\n') : text;
-    sessionLib.userMessage(s, body);
-    if (s.name === '新会话') s.name = body.replace(/\s+/g, ' ').slice(0, 24) || '新会话';
+    // 附件按类型分流：图片进 image part，其余仍是 `[附件] x` 文本行。
+    // 判定只有一处实现（core/images.js），渲染层只管把相对路径丢上来。
+    // 这里**不看** supportsVision 开关 —— 图先按图记下来，发请求那一刻再由
+    // renderMessages 决定走数组还是退化成一行文本。这样用户事后把开关打开，
+    // 之前拖进来的图立刻就能用，不必重拖一遍。
+    const list = (attachments || []).filter(Boolean);
+    const pics = list.filter((a) => images.isImage(a)).map((a) => ({ rel: a, mime: images.mimeFor(a) }));
+    const others = list.filter((a) => !images.isImage(a));
+    // 非图片附件仍然是老规矩：拼成 `[附件] x` 几行跟在正文后面。
+    // 这一行是**唯一**的拼接处，渲染层拿它覆盖本地回声（见下面的 return）。
+    const body = others.length ? text + '\n\n' + others.map((a) => `[附件] ${a}`).join('\n') : text;
+    sessionLib.userMessage(s, body, { images: pics });
+    if (s.name === '新会话') {
+      // 只拖图不打字时正文是空的，拿第一张图的名字当会话名，总比叫"新会话"好找
+      const seed = body.replace(/\s+/g, ' ').trim() || (pics.length ? pics[0].rel : '');
+      s.name = seed.slice(0, 24) || '新会话';
+    }
     store.saveSession(projectId, s);
     // 不等待整轮结束：进度通过 agent:event 推给渲染层
     // 不等待整轮结束：进度通过 agent:event 推给渲染层。
     // 登记这份对象（见 liveSessions）：本轮跑着的时候，sessions:update 要能找到它、就地改，
     // 否则运行中切审批模式只会改到磁盘上那份，本轮读的还是老值。
     liveSessions.set(liveKey(projectId, sessionId), s);
-    runlog.turn({ phase: 'request', sessionId, projectId, model: (store.getSettings().model || {}).model, chars: String(body || '').length, text: String(body || '').slice(0, 200) });
+    runlog.turn({ phase: 'request', sessionId, projectId, model: (store.getSettings().model || {}).model, chars: String(body || '').length, text: String(body || '').slice(0, 200), images: pics.length, vision: !!store.getSettings().model.supportsVision });
     agent.runTurn(s).catch((e) => {
       runlog.log('turn.failed', { sessionId: s.id, error: reasonOf(e), stack: (e && e.stack || '').split('\n').slice(0, 4).join(' | ') });
       if (!win || win.isDestroyed()) return;
@@ -769,7 +784,8 @@ function registerIpc() {
     });
     // body 回给渲染层：界面上那条"已发出"的本地回声要和真正发出去的字节一致，
     // 而拼接规则只应该有一处实现（就是上面这行）—— 别让渲染层再抄一遍。
-    return { started: true, body, meta: sessionMeta(s), transcript: sessionLib.renderTranscript(s) };
+    // images 一并回：回声气泡要立刻显示缩略图，不能等下一轮 session:update 才蹦出来。
+    return { started: true, body, images: pics.map((p) => p.rel), meta: sessionMeta(s), transcript: sessionLib.renderTranscript(s) };
   });
   ipcMain.handle('chat:stop', (_e, { sessionId }) => {
     const ok = agent.stop(sessionId);
@@ -848,13 +864,41 @@ function registerIpc() {
       }
       const rel = path.relative(root, dest).split(path.sep).join('/');
       runlog.log('file.attach', { sessionId, from: src, to: dest, copied: !inside, bytes: st.size });
-      return { ok: true, rel, name: path.basename(dest), copied: !inside, bytes: fs.statSync(dest).size, from: src };
+      // 图片顺手量一下宽高：附件小条上要显示尺寸，超长边的要能给"太大"的提示。
+      // 这里**不**塞 data URL —— 要看像素是 files:preview 的事，两个语义别混在一起。
+      const info = images.isImage(dest) ? images.inspect(dest) : null;
+      return {
+        ok: true, rel, name: path.basename(dest), copied: !inside, bytes: fs.statSync(dest).size, from: src,
+        image: info ? {
+          ok: info.ok, error: info.ok ? null : info.error,
+          width: info.width || null, height: info.height || null,
+          tokens: info.tokens || 0, oversize: !!info.oversize,
+        } : null,
+      };
     } catch (e) {
       const msg = e.code === 'ENOENT' ? '源文件不在了（可能已被移动或删除）'
         : e.code === 'EPERM' || e.code === 'EACCES' ? '没权限读写（源文件被占用，或工作目录不可写）'
         : e.code === 'ENOSPC' ? '磁盘空间不够'
         : (e.message || String(e));
       return { ok: false, error: msg };
+    }
+  });
+  // 渲染层要一张图的像素（气泡缩略图）。transcript 里只带相对路径，像素按需来取。
+  // 只认工作目录内的路径 —— 和 core/tools/fs.js 的 resolveIn 同一条规矩：
+  // 凡是"用户给的路径"，都必须在会话工作目录里，否则一律拒绝。
+  ipcMain.handle('files:preview', (_e, { projectId, sessionId, rel }) => {
+    try {
+      const s = loadSession(projectId, sessionId);
+      const root = s.workingDir;
+      if (!root) return { ok: false, error: '这个会话没有工作目录' };
+      const abs = path.resolve(root, String(rel || ''));
+      const out = path.relative(root, abs);
+      if (out === '' || out.startsWith('..') || path.isAbsolute(out)) return { ok: false, error: '路径越界' };
+      const r = images.inspect(abs);
+      if (!r.ok) return { ok: false, error: r.error };
+      return { ok: true, dataUrl: r.dataUrl, abs, width: r.width, height: r.height, mime: r.mime, bytes: r.bytes };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
     }
   });
   ipcMain.handle('shell:openPath', (_e, target) => (bgBlocked('打开路径 ' + target) ? '' : shell.openPath(target)));

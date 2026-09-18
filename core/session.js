@@ -4,6 +4,7 @@
 const os = require('os');
 const path = require('path');
 const store = require('./store');
+const images = require('./images');
 const { getProgram, toolAliasesFor } = require('./prompts');
 
 const ENTRY_TYPES = [
@@ -59,11 +60,21 @@ function findEntry(session, entryId) {
 }
 
 function userMessage(session, text, opts = {}) {
+  const parts = [{ type: 'text', text }];
+  // 图片只记**工作目录内的相对路径**，绝不记 base64：
+  // 事件日志是 append-only 的，base64 写进去之后 fork 会复制它、压缩要把历史拼成文本
+  // 喂给摘要子会话、重开会话还要整个读一遍 —— 三处都会被撑爆。
+  // 真正转 data URL 发生在 renderMessages（发请求那一刻现读现转）。
+  for (const img of opts.images || []) {
+    const rel = typeof img === 'string' ? img : (img && img.rel);
+    if (!rel) continue;
+    parts.push({ type: 'image', rel, mime: (img && img.mime) || images.mimeFor(rel) || null });
+  }
   return appendEntry(session, {
     type: 'message',
     role: 'user',
     hidden: !!opts.hidden,
-    parts: [{ type: 'text', text }],
+    parts,
   });
 }
 
@@ -148,8 +159,53 @@ function environmentBlock(session) {
   return '<environment>\n' + lines.join('\n') + '\n</environment>';
 }
 
+/**
+ * 组装一条带图片的 user 消息（content 数组形）。
+ * 读盘失败的图**不整轮失败**，退化成一行中文说明放在文本 part 里 ——
+ * 拖进来的图后来被改名或删掉是很正常的事，不该让整轮对话因此发不出去。
+ */
+function userContentWithImages(session, entry, pics) {
+  const notes = [];
+  const content = [];
+  for (const p of pics) {
+    const r = images.inspect(path.resolve(session.workingDir || '.', p.rel));
+    if (!r.ok) { notes.push(`[图片不可用：${p.rel}（${r.error}）]`); continue; }
+    content.push({ type: 'image_url', image_url: { url: r.dataUrl } });
+  }
+  const head = [entryPlainText(entry), ...notes].filter(Boolean).join('\n\n');
+  // 文本 part 不能省、也不能是空串：用户只拖了图没打字时给它一句占位，
+  // 否则会发出一个"只有 image part"的消息，各家端点对它的接受度并不一致。
+  return [{ type: 'text', text: head || (content.length ? '（见附图）' : '（图片不可用）') }, ...content];
+}
+
+/**
+ * 消息数组的总字符数（运行日志的 promptChars 用）。
+ * 为什么不用 `JSON.stringify(messages).length`：消息里一旦有图，那行会先把几 MB 的
+ * base64 拼成一个完整字符串再取长度 —— agent 每步都来一次，纯属白烧内存。
+ */
+function messagesChars(messages) {
+  let n = 0;
+  for (const m of messages || []) {
+    if (!m) continue;
+    if (typeof m.content === 'string') n += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (!p) continue;
+        if (typeof p.text === 'string') n += p.text.length;
+        else if (p.image_url && typeof p.image_url.url === 'string') n += p.image_url.url.length;
+      }
+    }
+    if (m.tool_calls) n += JSON.stringify(m.tool_calls).length;
+  }
+  return n;
+}
+
 // ---- 把事件日志渲染成模型消息 ----
-function renderMessages(session, { systemSuffix } = {}) {
+// vision=true 且这条 user 消息带 image part 时，content 用**数组**形
+// （`[{type:'text'},{type:'image_url',image_url:{url}}]`，OpenAI /chat/completions 的规范）；
+// 否则一律维持原来的字符串形 —— 没开视觉开关时，图退化成一行 `[附件] x` 文本，
+// 行为和接图片之前完全一致。
+function renderMessages(session, { systemSuffix, vision } = {}) {
   const system = [session.instruction || '', '\n# Environment\n', environmentBlock(session)];
   if (systemSuffix) system.push('\n', systemSuffix);
   if (session.readOnly) system.push('\nThis session is read-only. You may inspect files but must not modify them.');
@@ -165,7 +221,21 @@ function renderMessages(session, { systemSuffix } = {}) {
   for (const e of session.entries.slice(startIdx)) {
     if (e.type !== 'message') continue;
     if (e.role === 'user') {
-      messages.push({ role: 'user', content: entryPlainText(e) });
+      const pics = (e.parts || []).filter((p) => p.type === 'image');
+      if (vision && pics.length) {
+        messages.push({ role: 'user', content: userContentWithImages(session, e, pics) });
+      } else {
+        // 没开视觉开关，或这条消息里根本没有图 → 维持原来的字符串形。
+        // 注意这里是**补齐** [附件] 行而不是丢弃：image part 是 main.js 写的，
+        // 它写的时候并没有同时写 [附件] 文本行（否则开着视觉会两处重复），
+        // 所以关掉开关/端点不吃图时，那几行必须在这里补出来，
+        // 模型才仍然知道"有个 chart.png 在工作目录里"。
+        const text = entryPlainText(e);
+        messages.push({
+          role: 'user',
+          content: pics.length ? text + '\n\n' + pics.map((p) => `[附件] ${p.rel}`).join('\n') : text,
+        });
+      }
     } else if (e.role === 'assistant') {
       const text = entryPlainText(e);
       const calls = (e.parts || []).filter((p) => p.type === 'toolCallRequest');
@@ -194,7 +264,13 @@ function renderTranscript(session) {
   const rows = [];
   for (const e of session.entries) {
     if (e.type === 'message' && e.role === 'user') {
-      rows.push({ kind: 'user', id: e.id, ts: e.ts, text: entryPlainText(e), hidden: !!e.hidden });
+      rows.push({
+        kind: 'user', id: e.id, ts: e.ts, text: entryPlainText(e), hidden: !!e.hidden,
+        // 界面要能看见自己拖了什么。只带相对路径，像素由渲染层按需向主进程要
+        // （见 main.js 的 files:preview）—— transcript 是每轮都会重发的一份数据，
+        // 把 data URL 塞进来等于每次会话更新都搬一遍图。
+        images: (e.parts || []).filter((p) => p.type === 'image').map((p) => ({ rel: p.rel, mime: p.mime || null })),
+      });
     } else if (e.type === 'message' && e.role === 'assistant') {
       rows.push({
         kind: 'assistant',
@@ -244,6 +320,6 @@ module.exports = {
   ENTRY_TYPES, now, createSession, appendEntry, findEntry,
   userMessage, assistantMessage, toolMessage,
   entryPlainText, estimateTokens, estimateChars, addUsage, environmentBlock,
-  renderMessages, renderTranscript, forkSession,
+  renderMessages, renderTranscript, forkSession, messagesChars,
   toolAliasesFor,
 };

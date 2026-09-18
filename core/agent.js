@@ -9,6 +9,7 @@ const checkpoints = require('./checkpoints');
 const approvals = require('./approvals');
 const compact = require('./compact');
 const model = require('./model');
+const images = require('./images');
 const runlog = require('./runlog');
 const { PROMPTS, getProgram, toolAliasesFor } = require('./prompts');
 const skillsMod = require('./tools/skills');
@@ -107,7 +108,12 @@ class Agent {
       temperature: s.model.temperature,
       maxTokens: s.model.maxTokens,
     };
-    return { ...base, ...(session.model || {}), settings: s };
+    // 这个模型能不能吃图。和模型名/温度一样支持**会话级覆盖**
+    // （session.model 是既有的覆盖口），所以这里和它一起算，不另开一套。
+    const vision = (session.model && typeof session.model.supportsVision === 'boolean')
+      ? session.model.supportsVision
+      : !!s.model.supportsVision;
+    return { ...base, ...(session.model || {}), vision, settings: s };
   }
 
   ctx(session, turn) {
@@ -143,18 +149,22 @@ class Agent {
       const settings = this.getSettings();
       session.instruction = session.instruction || PROMPTS[session.promptKey || getProgram(session.programId).prompt];
       const turn = { startedAt: turnStart, snapshots: [] };
+      // 视觉开关在**这一轮内**是可变的：勾了"支持图片输入"但端点实际不吃图时，
+      // 下面会把它降级成 false 并重发一次；降级后这一轮剩下的每一步都按纯文本走，
+      // 不再每步都去撞一次 400。
+      let vision = !!this.modelConfig(session).vision;
       this.emit({ type: 'turn:start', sessionId: session.id });
       while (steps < (settings.agent.maxSteps || 40)) {
         if (ac.signal.aborted) throw new Error('已停止');
         steps++;
 
         // 1) 压缩（需要时）
-        let messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix() });
+        let messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix(), vision });
         if (session.modules.includes('compaction')) {
           const c = await compact.maybeCompact(settings, session, messages, { signal: ac.signal });
           if (c.compacted) {
             this.emit({ type: 'compaction', sessionId: session.id, dropped: c.dropped });
-            messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix() });
+            messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix(), vision });
           }
         }
 
@@ -169,20 +179,56 @@ class Agent {
         runlog.log('model.start', {
           sessionId: session.id, step: steps, model: mcfg.model, stream: true,
           messages: messages.length, tools: (schemas || []).length,
-          promptChars: JSON.stringify(messages).length,
+          promptChars: sessionLib.messagesChars(messages),
+          images: images.hasImageParts(messages) ? 1 : 0,
         });
-        const acc = await model.streamChat(mcfg, {
-          messages,
-          tools: schemas,
-          signal: ac.signal,
-          timeoutMs: settings.agent.requestTimeoutMs,
-          idleTimeoutMs: settings.agent.streamIdleTimeoutMs,
-          onEvent: (ev) => {
-            if (ev.type === 'text') this.emit({ type: 'assistant:delta', sessionId: session.id, kind: 'text', delta: ev.delta });
-            else if (ev.type === 'reasoning') this.emit({ type: 'assistant:delta', sessionId: session.id, kind: 'reasoning', delta: ev.delta });
-            else if (ev.type === 'toolName') this.emit({ type: 'tool:announce', sessionId: session.id, name: ev.name });
-          },
-        });
+        const onModelEvent = (ev) => {
+          if (ev.type === 'text') this.emit({ type: 'assistant:delta', sessionId: session.id, kind: 'text', delta: ev.delta });
+          else if (ev.type === 'reasoning') this.emit({ type: 'assistant:delta', sessionId: session.id, kind: 'reasoning', delta: ev.delta });
+          else if (ev.type === 'toolName') this.emit({ type: 'tool:announce', sessionId: session.id, name: ev.name });
+        };
+        // 这一步最多发两次请求。第一次按当前 vision 走；只有"端点明确因为图片报错"时才
+        // 剥掉图重发一次。重发的那次如果也失败，两个错都要报出来 —— 只报第二次会掩盖
+        // "其实是图片引起的"这个最关键的信息。
+        let acc = null;
+        let imageError = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            acc = await model.streamChat(mcfg, {
+              messages,
+              tools: schemas,
+              signal: ac.signal,
+              timeoutMs: settings.agent.requestTimeoutMs,
+              idleTimeoutMs: settings.agent.streamIdleTimeoutMs,
+              onEvent: onModelEvent,
+            });
+            break;
+          } catch (e) {
+            if (attempt === 0 && vision && images.hasImageParts(messages) && images.looksLikeImageRejection(e)) {
+              imageError = e;
+              vision = false;
+              // 勾了"支持图片输入"但端点其实不吃图 —— 不能整轮崩在这里，也不能只丢一句
+              // 英文堆栈。剥图重发，并明确告诉用户下一步该做什么。这条经验来自
+              // DeepSeek-Reasonix（internal/agent/imageinput.go）：失败时报的不该只是
+              // "失败了"，而是"别重试、该怎么办"，否则人和模型都会反复撞同一堵墙。
+              runlog.log('vision.fallback', { sessionId: session.id, step: steps, error: String((e && e.message) || e).slice(0, 400) });
+              sessionLib.appendEntry(session, {
+                type: 'error',
+                critical: false,
+                message: '这个模型拒绝了图片输入，已按纯文本重发（图片仍留在工作目录里，需要的话可以用文档工具处理）。'
+                  + '请在 设置 → 常规 里取消勾选「支持图片输入」。　原报错：' + String((e && e.message) || e).slice(0, 300),
+              });
+              this.emit(sessionEvent(session));
+              messages = sessionLib.renderMessages(session, { systemSuffix: skillsMod.systemSuffix(), vision: false });
+              continue;
+            }
+            if (imageError) {
+              throw new Error('剥掉图片重发仍然失败：' + ((e && e.message) || e)
+                + '　（带图片时报的是：' + String((imageError && imageError.message) || imageError).slice(0, 200) + '）');
+            }
+            throw e;
+          }
+        }
         // 模型调用的开销是排查"请求停不下来"的关键证据：耗时异常长 / token 暴涨都在这里
         runlog.modelCall({
           sessionId: session.id, step: steps, model: mcfg.model, ok: true,
