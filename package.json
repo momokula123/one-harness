@@ -1,7 +1,7 @@
 {
   "name": "one-harness",
   "productName": "One Harness",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "One Harness —— 风远偕来，途遥共赴 · local-first agent harness for open models (desktop)",
   "main": "main.js",
@@ -15,6 +15,7 @@
     "test:bionic": "node test/bionic-compare.js",
     "test:features": "node test/run-ui.js test/features.js",
     "test:approval-mode": "node test/run-approval-mode.js",
+    "test:reindex": "node test/run-reindex.js",
     "launch-check": "node test/launch-check.js",
     "test": "node test/smoke.js && node test/vision.js && node test/run-ui.js && node test/offscreen-mouse.js && node test/run-approval-mode.js && node test/bionic-compare.js && node test/launch-check.js",
     "dist": "electron-builder --win --dir",

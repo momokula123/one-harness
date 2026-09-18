@@ -589,6 +589,28 @@ async function main() {
     JSON.stringify(idxBack));
   check('新增的工程在本机没有会话记录 → orphan 说出来（免得以为会话被吞了）', im2.orphan === 1, String(im2.orphan));
 
+  // ---- orphan 的两半对照：它说的是"本机有没有这个工程的会话正文"，不是别的 ----
+  // 真实场景：把老机器的 data/ 拷过来（正文已经在盘上）之后再导索引 ——
+  // 这时候如果还弹"没有会话记录"，用户会白紧张一场（点开明明能看）。
+  // 同一份备份、同一个工程，只改"盘上有没有正文"，orphan 必须跟着变。
+  store.deleteProject(idxProj.id);                                  // 摘索引，正文目录不动
+  const diskSession = sessionLib.createSession({ projectId: idxProj.id, name: '盘上就有的会话' });
+  sessionLib.userMessage(diskSession, '你好');
+  store.saveSession(idxProj.id, diskSession);
+  const imBody = store.importProjectIndex(idxFile);
+  check('正文已在盘上时：导入只报新增，orphan 是 0（不报缺正文）',
+    imBody.ok === true && imBody.added === 1 && imBody.orphan === 0, JSON.stringify(imBody));
+  check('而且那条正文还读得出来（导入没把它弄丢）',
+    (() => { const l = store.listSessions(idxProj.id); return l.length === 1 && l[0].name === '盘上就有的会话'; })(),
+    JSON.stringify(store.listSessions(idxProj.id).map((s) => s.name)));
+
+  store.deleteProject(idxProj.id);
+  fs.rmSync(path.join(store.PROJECTS_DIR, idxProj.id), { recursive: true, force: true });  // 这次连正文一起删
+  const imNoBody = store.importProjectIndex(idxFile);
+  check('对照：同一个工程、正文不在时 orphan 就是 1（证明这个数字有区分度，不是恒 0）',
+    imNoBody.ok === true && imNoBody.added === 1 && imNoBody.orphan === 1, JSON.stringify(imNoBody));
+
+
   // 手工造一份"带杂质的备份"：外来字段、同 id 改名、空名字、缺 id
   const fxFile = path.join(TMP, 'idx-fixture.json');
   fs.writeFileSync(fxFile, JSON.stringify({

@@ -30,11 +30,21 @@ if (!fs.existsSync(SCRIPT)) {
 
 // 每次跑都从干净的数据目录开始，否则"新建了一个项目"这种计数断言会随历史累积失真。
 // 删不掉就换一个全新的目录（有些环境对批量删除有保护），效果一样。
-try {
-  fs.rmSync(DATA_DIR, { recursive: true, force: true });
-} catch (e) {
-  DATA_DIR = path.join(TMP, 'data-' + Date.now());
-  console.log('[run-ui] 旧数据目录删不掉（' + e.message.split('\n')[0] + '），改用 ' + path.basename(DATA_DIR));
+//
+// HATCH_UI_KEEP_DATA=1 时不清理：有些探针要验的是**盘上已有数据**的情形，而且那种状态
+// 往往无法用 API 造出来（例："工程目录里有会话正文、但 projects.json 里没有这一行"
+// —— 走 API 建会话必然同时写索引，造不出这个不一致状态）。这类探针自己准备目录，
+// 用这个开关请跑分器别清。默认仍然是清，别改默认值。
+if (process.env.HATCH_UI_KEEP_DATA) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log('[run-ui] HATCH_UI_KEEP_DATA=1 → 保留既有数据目录：' + DATA_DIR);
+} else {
+  try {
+    fs.rmSync(DATA_DIR, { recursive: true, force: true });
+  } catch (e) {
+    DATA_DIR = path.join(TMP, 'data-' + Date.now());
+    console.log('[run-ui] 旧数据目录删不掉（' + e.message.split('\n')[0] + '），改用 ' + path.basename(DATA_DIR));
+  }
 }
 fs.mkdirSync(PICK_DIR, { recursive: true });
 // 内置浏览器那条断言要真加载一个本机页面（证明 guest 真的渲染了，而不是只有一个空元素），
