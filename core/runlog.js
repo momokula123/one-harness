@@ -48,6 +48,19 @@ function dayKey(d = new Date()) {
 }
 
 /**
+ * 应用版本。出处只有一个：package.json（打包后 = resources/app/package.json）。
+ * 记进 app.start 是为了回答"用户手里那个包到底是哪一版" —— 光有文件名不够，
+ * 因为包会被改名、会被拷来拷去；日志里的版本是程序自报的。查不到就 unknown，绝不抛错。
+ */
+function appVersion() {
+  try {
+    return require(path.join(__dirname, '..', 'package.json')).version || 'unknown';
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+/**
  * 初始化。dataDir 传 store.DATA_DIR 或 store.ROOT 都行 —— 日志跟数据放一起，
  * 绿色版里就落在 exe 旁边的 logs/ 下，跟文件夹一起搬走。
  */
@@ -62,6 +75,7 @@ function init(roots) {
     enabled = true;
     write('app.start', {
       pid: process.pid,
+      version: appVersion(),
       runtime: 'node ' + process.versions.node + (process.versions.electron ? ' / electron ' + process.versions.electron : ''),
       packaged: !!(roots && roots.packaged),
       logDir: LOG_DIR,

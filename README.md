@@ -102,5 +102,19 @@ npm run launch-check        # 主进程 + preload + 渲染层能否起来
 - 未做 RAG、插件沙箱、MCP
 - 联网搜索需自配 SearxNG 端点（`web_fetch` 开箱可用）
 - Python 走本机解释器，不是沙箱
-- 目前跑源码，未打包成安装程序
+- 目前以绿色版分发（解压即用），未做安装程序
 - 界面只有浅色主题
+
+## 打包（绿色版）
+
+`electron-builder` 出免安装文件夹，压缩成 `dist/One-Harness-<版本>-win-x64.zip`，解压双击 `One Harness.exe` 即用，数据落在 exe 旁边、跟文件夹一起搬走。
+
+**铁律：每次出包必须先升 `package.json` 的 `version`**，包名里的版本由 `build.artifactName` 自动带出，不靠人记。理由很具体——曾经出现过"代码改了、包还是旧版本号"，发出去的包里其实是改动前的代码，光看文件名完全看不出来。程序启动时会把自己的版本写进 `logs/run-YYYY-MM-DD.log` 的 `app.start` 事件，用户贴一行日志就能确定他跑的是哪一版。
+
+打包注意：输出目录**必须换新的**（`-c.directories.output=dist/<版本>`）。原地重打会先清空旧的输出目录，这一步在受限环境下会被批量删除守卫拦下而失败：
+
+```bash
+node node_modules/electron-builder/cli.js --win --dir -c.directories.output=dist/$(node -p "require('./package.json').version")
+```
+
+出包顺序：升版本 → `npm run smoke` 全绿 → 打包 → **在打包后的树里真跑一次关键功能** → 确认没有 `data/` `userdata/` `logs/` 残留（尤其翻一眼 `settings.json` 里的 apiKey / 私有 `baseUrl`）→ 压缩 → 核对 zip 条目与字节。
