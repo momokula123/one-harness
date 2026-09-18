@@ -54,6 +54,10 @@ const env = {
   HATCH_PICK_FOLDER: PICK_DIR,
   HATCH_MOUSE_FILE: STEPS,
   HATCH_MOUSE_OUT: OUT,
+  // 「用系统默认浏览器打开」只判定不真打开：自动化跑不能真把浏览器/资源管理器
+  // 糊到用户屏幕上（这一条和"系统文件夹对话框桩掉"是同一个道理）。
+  // 除"不真打开"以外的链路（IPC → 解析 → 回值 → 界面提示）全是真的。
+  HATCH_OPEN_DRYRUN: '1',
   HATCH_MOUSE_DELAY: '3000',
 };
 delete env.ELECTRON_RUN_AS_NODE;

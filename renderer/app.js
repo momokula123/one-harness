@@ -2116,9 +2116,16 @@ function bindBrowser() {
     syncNavButtons();
   };
   $('bw-reload').onclick = () => { if (bwView && bwReady) bwView.reload(); };
-  $('bw-open').onclick = () => {
-    const u = url.value.trim();
-    if (u) api.shell.openPath(u);   // 交给系统默认浏览器；本地路径则由系统按关联程序打开
+  // 「用系统默认浏览器打开」：地址栏那串先跟回车走同一条归一化（toUrl），再交给系统。
+  // ★ 必须走 openExternal —— openPath 只吃文件系统路径，喂它 `file:///C:/…` 这种会失败，
+  //   而且失败是 resolve 出来的字符串、不抛异常，旧代码没接返回值 → 用户看到的"按了没反应"。
+  //   现在无论成败都回一句话，不存在"什么都不发生"。
+  $('bw-open').onclick = async () => {
+    const t = toUrl(url.value);
+    if (!t) { toast('地址栏是空的', 'err'); return; }
+    const r = await api.shell.openExternal(t);
+    if (r && r.ok) toast('已交给系统打开：' + r.target, 'ok');
+    else toast('打不开：' + ((r && r.error) || '未知原因'), 'err');
   };
   syncNavButtons();
 }
@@ -2139,7 +2146,9 @@ function openLink(href) {
   const raw = String(href || '').trim();
   if (!raw) return false;
   if (/^(https?|file):/i.test(raw)) { openInBrowser(raw); return true; }
-  if (/^mailto:/i.test(raw)) { api.shell.openPath(raw); return true; }
+  // 协议链接（mailto: 等）交给系统 —— 也必须 openExternal：openPath 拿 "mailto:…" 当路径找，
+  // 找不到就静默失败（同 bw-open 那个 bug 一个成因）。
+  if (/^(mailto|tel):/i.test(raw)) { api.shell.openExternal(raw); return true; }
 
   // 相对路径 → 依次用这几个基准目录试探
   const bases = [];

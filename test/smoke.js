@@ -492,6 +492,43 @@ async function main() {
   uistate.removeWindow('second');
   check('removeWindow 收拾干净', !fs.existsSync(uistate.windowFile('second')) && !uistate.readGlobal().openedWindowKeys.includes('second'));
 
+  // ---------- 「用系统默认浏览器打开」的判定（core/open-target.js） ----------
+  // 起因：右栏浏览器那个按钮按了没反应 —— openPath 只吃文件系统路径，喂 URL 会
+  // 返回 "Failed to open path"（字符串、不抛异常），旧代码没接，于是静默失败。
+  // 这些断言钉住"什么形状该交给谁"，其中 file:/// 那条就是用户截图里的形状。
+  const ot = require('../core/open-target');
+  check('https 网址判为 URL（交给 openExternal）',
+    ot.resolve('https://github.com/momokula123/one-harness').kind === 'url',
+    JSON.stringify(ot.resolve('https://github.com/momokula123/one-harness')));
+  check('大写 scheme 也认',
+    ot.resolve('HTTPS://Example.com/A?b=1').scheme === 'https');
+  check('file:/// URL 判为 URL —— 正是旧代码喂给 openPath 必然失败的那种形状',
+    (() => { const r = ot.resolve('file:///C:/Users/Administrator/Downloads'); return r.kind === 'url' && r.target === 'file:///C:/Users/Administrator/Downloads'; })(),
+    JSON.stringify(ot.resolve('file:///C:/Users/Administrator/Downloads')));
+  check('Windows 盘符路径判为本地路径并转成 file://',
+    (() => { const r = ot.resolve('C:\\Users\\Administrator\\Downloads'); return r.kind === 'path' && r.target === 'file:///C:/Users/Administrator/Downloads' && r.abs === 'C:\\Users\\Administrator\\Downloads'; })(),
+    JSON.stringify(ot.resolve('C:\\Users\\Administrator\\Downloads')));
+  check('正斜杠盘符路径同样认',
+    ot.resolve('C:/Users/Administrator/Downloads').target === 'file:///C:/Users/Administrator/Downloads');
+  check('路径里的中文与空格按 URL 规则转义',
+    ot.resolve('C:\\Users\\Administrator\\我的 文件.html').target === 'file:///C:/Users/Administrator/%E6%88%91%E7%9A%84%20%E6%96%87%E4%BB%B6.html',
+    ot.resolve('C:\\Users\\Administrator\\我的 文件.html').target);
+  check('UNC 路径转成 file://server/share',
+    ot.resolve('\\\\server\\share\\a.txt').target === 'file://server/share/a.txt',
+    ot.resolve('\\\\server\\share\\a.txt').target);
+  check('`C:foo` 这种盘符相对路径不会被误判成 scheme',
+    ot.resolve('C:foo').kind === 'path', JSON.stringify(ot.resolve('C:foo')));
+  check('mailto: 判为 URL（协议链接也必须走 openExternal）',
+    ot.resolve('mailto:someone@example.com').kind === 'url');
+  check('空串判为 empty —— 调用方必须给提示，不许静默',
+    ot.resolve('   ').kind === 'empty');
+  check('相对路径按 base 拼绝对',
+    ot.resolve('sub/a.html', { base: 'C:\\proj' }).target === 'file:///C:/proj/sub/a.html',
+    ot.resolve('sub/a.html', { base: 'C:\\proj' }).target);
+  // 反向对照：证明"判成 url"不是恒真 —— 本地路径这一侧必须为 false
+  check('对照：本地路径不会被判成 URL',
+    ot.isUrlLike('C:\\Users\\Administrator\\Downloads') === false && ot.isUrlLike('file:///C:/x') === true);
+
   server.close();
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);
   process.exit(fail ? 1 : 0);

@@ -352,6 +352,63 @@ module.exports = async ({ click, dblclick, probe, js, wait, log, input, hover, d
   add('真实键盘能往输入框打字', typed === 'REAL_TYPING', { typed });
   await js("const i=document.getElementById('input'); i.value=''; i.dispatchEvent(new Event('input',{bubbles:true}));");
 
+  // ---- 12b. 右栏浏览器「用系统默认浏览器打开」 ----
+  // 用户报的 bug：按下没反应。根因是那一下交给了 shell.openPath —— 它只吃文件系统路径，
+  // 喂 `file:///…` / `https://…` 会返回 "Failed to open path"（字符串、不 reject），
+  // 旧代码没接返回值，于是"静默失败"。现在走 openExternal，且无论成败都回一句话。
+  // 这里真鼠标验两件事：① 那个按钮真人点得到（它紧挨输入框，容易落在别处）；
+  // ② 点完确实走到主进程、并按地址栏内容解析（拿 toast 文本当凭据）。
+  // 注：跑分器会给子进程带 HATCH_OPEN_DRYRUN=1 —— 自动化不许真把浏览器/资源管理器
+  // 糊到用户屏幕上；dry-run 里除了"不真打开"以外的链路（IPC、解析、回值、提示）全是真的。
+  try {
+    if ((await state()).noRight) await click('#btn-toggle-right', '先把右栏展开');
+    // 注意：executeJavaScript 是当**脚本**求值的，顶层写 `return` 是语法错误
+    // （表现为 "Script failed to execute"）—— 一律包成 IIFE。
+    await js("(() => { switchPanel('browser'); return true; })()");
+    await wait(300);
+    const bwProbe = await probe('#bw-open');
+    // appRegion 这里天然是 none（按钮不在顶栏拖拽区里）——"不是 drag"就够，别照抄左栏那条 no-drag。
+    add('右栏浏览器的「用系统默认浏览器打开」能被真实鼠标点到',
+      bwProbe.found && bwProbe.visible && bwProbe.reachable === true && bwProbe.appRegion !== 'drag', bwProbe);
+
+    const toasts = () => js("[...document.querySelectorAll('#toasts .toast')].map(e=>e.textContent).join(' ~ ')");
+    const putUrl = (v) => js("(() => { document.getElementById('toasts').innerHTML=''; document.getElementById('bw-url').value=" + JSON.stringify(v) + "; return true; })()");
+    const netCase = 'https://github.com/momokula123/one-harness';
+    await putUrl(netCase);
+    const cNet = await click('#bw-open', '点「用系统默认浏览器打开」（网址）');
+    await wait(600);
+    const tNet = await toasts();
+    add('点网址：真的走到主进程，并按地址栏内容交给系统',
+      cNet.reachable === true && tNet.includes('已交给系统打开：' + netCase), tNet);
+
+    const pathCase = 'C:\\Users\\Administrator\\Downloads';
+    await putUrl(pathCase);
+    await click('#bw-open', '点「用系统默认浏览器打开」（本地路径）');
+    await wait(600);
+    const tPath = await toasts();
+    add('点本地路径：先转成 file:// 再交给系统（旧代码就是在这里静默失败的）',
+      tPath.includes('已交给系统打开：file:///C:/Users/Administrator/Downloads'), tPath);
+
+    // 反向对照：地址栏为空时必须明确报错，而不是"什么都不发生"（旧代码正是后者）
+    await putUrl('');
+    await click('#bw-open', '点「用系统默认浏览器打开」（空地址）');
+    await wait(600);
+    const tEmpty = await toasts();
+    add('对照：地址栏为空时明确报「地址栏是空的」（不再静默）', tEmpty.includes('地址栏是空的'), tEmpty);
+
+    // 反向对照：右栏收起时这个按钮**必须点不到** —— 否则上面那条 reachable 可能是恒真，
+    // 全绿也就说明不了任何事（老 bug"收起后按钮跟着消失"正是这一类）。
+    await click('#btn-close-right', '收起右栏（准备反向对照）');
+    const bwHidden = await probe('#bw-open');
+    const collapsed = (await state()).noRight;
+    add('对照：右栏收起后同一个按钮点不到（证明可点性断言有区分度）',
+      collapsed === true && bwHidden.found && bwHidden.reachable === false, { collapsed, probe: bwHidden });
+    await click('#btn-toggle-right', '恢复右栏');
+    add('恢复右栏后按钮又能点到了', (await probe('#bw-open')).reachable === true);
+  } catch (e) {
+    add('右栏浏览器的打开按钮', false, String((e && e.message) || e));
+  }
+
   // ---- 13. 滚轮事件真的送达页面 ----
   // ⚠️ 屏幕外模式下**直接跳过**：屏幕外窗口的合成帧率极低，滚轮根本合成不出来，
   //    干等只会把整场测试拖到超时（实测踩过）。要验这两条请跑 npm run test:mouse:visible。

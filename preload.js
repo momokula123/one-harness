@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld('hatch', {
   },
   shell: {
     openPath: (p) => invoke('shell:openPath', p),
+    // 网址/协议一律走它（openPath 只吃文件系统路径，喂 URL 会静默失败）
+    openExternal: (raw) => invoke('shell:openExternal', raw),
     showItem: (p) => invoke('shell:showItem', p),
     openDataDir: () => invoke('app:openDataDir'),
   },

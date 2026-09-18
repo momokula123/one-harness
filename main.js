@@ -8,6 +8,7 @@ const fs = require('fs');
 const store = require('./core/store');
 const sessionLib = require('./core/session');
 const images = require('./core/images');
+const openTarget = require('./core/open-target');
 const tools = require('./core/tools');
 const checkpoints = require('./core/checkpoints');
 const { Agent, sessionEvent, sessionMeta } = require('./core/agent');
@@ -43,6 +44,9 @@ uistate.patchWindow(WINDOW_KEY, {});
 uistate.patchGlobal({});
 // 自动测试/截图跑：窗口不显示、不抢焦点、有副屏就扔副屏（见 createWindow 的 ready-to-show）
 const BACKGROUND = !!process.env.HATCH_BACKGROUND;
+// 只判定"这条东西该交给谁打开"，不真打开（自动化测试用：测试不能把浏览器/资源管理器
+// 糊到用户屏幕上）。见 shell:openExternal 处理器。
+const OPEN_DRYRUN = !!process.env.HATCH_OPEN_DRYRUN;
 // 例外：确实需要真截图的场合（生成文档图、自检窗口可见性）才允许把窗口画出来
 const SHOT_VISIBLE = !!process.env.HATCH_SHOT_VISIBLE;
 // 需要真实指针输入（mouseMove / mouseWheel）时用：Chromium 只在窗口"可见"时才处理
@@ -902,6 +906,34 @@ function registerIpc() {
     }
   });
   ipcMain.handle('shell:openPath', (_e, target) => (bgBlocked('打开路径 ' + target) ? '' : shell.openPath(target)));
+  // "用系统默认浏览器/默认程序打开" —— 只能走 openExternal，走 openPath 必然失败
+  // （openPath 只吃文件系统路径，且失败是 resolve 出来的字符串、不抛异常 → 旧代码静默不动，
+  //  表现就是用户报的"按了没反应"，详见 core/open-target.js 开头的说明）。
+  // 返回值统一带 kind/target，渲染层据此给成功/失败提示：不再有"什么都不发生"这条路径。
+  ipcMain.handle('shell:openExternal', async (_e, raw) => {
+    const r = openTarget.resolve(raw);
+    if (r.kind === 'empty') return { ok: false, error: '地址是空的' };
+    // HATCH_OPEN_DRYRUN：只判定不打开。自动化测试要用它 —— 测试不能真把浏览器/资源管理器
+    // 糊到用户屏幕上（同 HATCH_PICK_FOLDER 的道理）。放在 bgBlocked 之前：dry-run 不碰系统，
+    // 后台守卫管不着它。
+    if (OPEN_DRYRUN) {
+      console.log('[open] dry-run ' + r.kind + ' → ' + r.target);
+      return { ok: true, dryRun: true, kind: r.kind, target: r.target };
+    }
+    if (bgBlocked('用系统程序打开 ' + r.target)) return { ok: false, error: '后台模式不打开外部程序' };
+    try {
+      await shell.openExternal(r.target);
+      return { ok: true, kind: r.kind, target: r.target };
+    } catch (e) {
+      // 本地文件再退一步：交给系统按关联程序打开（浏览器处理不了的 .docx 之类）
+      if (r.kind === 'path') {
+        const msg = await shell.openPath(r.abs);
+        if (!msg) return { ok: true, kind: 'path-fallback', target: r.abs };
+        return { ok: false, error: msg, target: r.target };
+      }
+      return { ok: false, error: (e && e.message) || String(e), target: r.target };
+    }
+  });
   ipcMain.handle('shell:showItem', (_e, target) => (bgBlocked('在文件夹中显示 ' + target) ? undefined : shell.showItemInFolder(target)));
   ipcMain.handle('app:openDataDir', () => (bgBlocked('打开数据目录') ? '' : shell.openPath(store.DATA_DIR)));
   ipcMain.handle('agent:event', (_e, payload) => { /* 占位：渲染层主动推送用不到 */ return true; });

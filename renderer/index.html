@@ -122,7 +122,7 @@
       <button id="btn-close-right" class="ic-btn" title="收起右栏" data-ic="x" data-page-node-id="cbCriuYauMq5NRZkXIUqG0"></button>
     </div>
     <!-- 浏览器：内置的预览窗口（照 Bionic 的右栏）——生成 HTML 后能直接看效果。
-         地址栏 + 后退/前进/刷新 + 在系统浏览器打开。 -->
+         地址栏 + 后退/前进/刷新 + 用系统默认浏览器打开（走 shell.openExternal，见 app.js）。 -->
     <div class="panel" id="panel-browser" data-page-node-id="PanelBrowser000001">
       <div class="bw-bar" data-page-node-id="BwBar0000000000001">
         <button class="ic-btn sm" id="bw-back" title="后退" data-ic="arrow-left" data-page-node-id="BwBack00000000001"></button>
@@ -130,7 +130,7 @@
         <button class="ic-btn sm" id="bw-reload" title="刷新" data-ic="refresh" data-page-node-id="BwReload000000001"></button>
         <input id="bw-url" type="text" spellcheck="false" autocomplete="off"
                placeholder="输入地址或本地文件路径，回车打开" data-page-node-id="BwUrl000000000001" />
-        <button class="ic-btn sm" id="bw-open" title="在系统浏览器打开" data-ic="external" data-page-node-id="BwOpen00000000001"></button>
+        <button class="ic-btn sm" id="bw-open" title="用系统默认浏览器打开" data-ic="external" data-page-node-id="BwOpen00000000001"></button>
       </div>
       <div class="bw-stage" id="bw-stage" data-page-node-id="BwStage0000000001">
         <div class="empty" id="bw-empty">还没有打开的页面。<br>地址栏输入网址，或在会话里点一个 HTML 文件名。</div>
