@@ -1102,7 +1102,18 @@ function openModelSelect() {
  */
 async function openDefaultSession() {
   if (!S.projectId) { toast('先创建项目', 'err'); return null; }
-  const found = (S.sessions || []).find((s) => s.programId === DEFAULT_LLM_PROGRAM);
+  // "有没有"必须问**数据源**（当前项目的会话列表），不能只看渲染层缓存 S.sessions ——
+  // 那份缓存可能落后于磁盘，落后会带来两种坏事：
+  //   ① 明明已经有了却又建一个 → 用户看到两个同名的 One Harness 标签，"那一个"就没了；
+  //   ② 刚切完项目时缓存还是上一个项目的 → 在那边找到会话再拿这边的 projectId 去 load，
+  //      会直接报"会话不存在"。
+  // 这两种都属于"点一下就出岔子"，所以按项目现查一次（一次 IPC，成本可忽略）。
+  let list = S.sessions || [];
+  try {
+    const fresh = await api.sessions.list(S.projectId);
+    if (Array.isArray(fresh)) list = fresh;
+  } catch (_) { /* 读不到就退回缓存：宁可判得不那么准，也不能让入口点了没动静 */ }
+  const found = list.find((s) => s.programId === DEFAULT_LLM_PROGRAM);
   if (found) {
     if (found.id === S.sessionId) { toast('已经在这个会话里了'); $('input').focus(); return found; }
     await loadSession(found.id, S.projectId);
