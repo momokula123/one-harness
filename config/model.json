@@ -1,9 +1,10 @@
 {
   "_说明": "出厂兜底**语言模型**端点。只有当「设置 → 常规 → 模型端点」的 Base URL 与模型名都留空时才生效 —— 一旦你自己配了端点（两项都填），就整套按你填的来，这里一个字段都不参与（连 Key 都不借）。也可以在「设置 → 兜底模型 → 语言模型」那张卡里覆盖这几项；卡片留空 = 用这里的值。改完直接存盘即可，不用改代码；换版本文件夹时记得把这份带过去。baseUrl 填到 /v1 就行，多抄了 /chat/completions 会被程序自动剥掉。",
-  "_字段": "baseUrl = 端点地址（OpenAI 兼容，填到 /v1）；apiKey = 密钥，没有就留空字符串；model = 模型名，若该端点 /v1/models 里没有这个名字，程序会自动改用列表里的第一个（并写回「兜底模型」卡片，不会动你自己那组）；contextLength = 这个模型自带的上下文大小（token 数），决定自动压缩的阈值与界面上的占用条 —— agnes-3.0-flash 是 512K；reasoning = 思考强度（请求里的 reasoning_effort），只认这几个字面值：none / minimal / low / medium / high / xhigh / max（大小写敏感，别的值会被端点拒绝，程序会当成\"没设\"）。留空或写别的 = 不发这个字段，由端点自己决定。",
+  "_字段": "baseUrl = 端点地址（OpenAI 兼容，填到 /v1）；apiKey = 密钥，没有就留空字符串；model = 模型名，若该端点 /v1/models 里没有这个名字，程序会自动改用列表里的第一个（并写回「兜底模型」卡片，不会动你自己那组）；models = **这个端点只让选哪些模型**（数组，留空/不写 = 不限制、端点列出什么就全给）。注意：它只作用于**这一份出厂端点**——你在「设置 → 常规」里配了自己的端点时，拉出来的列表不受这里影响。contextLength = 这个模型自带的上下文大小（token 数），决定自动压缩的阈值与界面上的占用条 —— agnes-3.0-flash 是 512K；reasoning = 思考强度（请求里的 reasoning_effort），只认这几个字面值：none / minimal / low / medium / high / xhigh / max（大小写敏感，别的值会被端点拒绝，程序会当成\"没设\"）。留空或写别的 = 不发这个字段，由端点自己决定。",
   "baseUrl": "https://apihub.agnes-ai.com/v1",
   "apiKey": "sk-XqgVSEq2iJTzWiMThvNTauf2XwNmnMTXbjZOQbMWkGjgVX7E",
   "model": "agnes-3.0-flash",
+  "models": ["agnes-3.0-flash"],
   "contextLength": 524288,
   "reasoning": "none"
 }

@@ -14,10 +14,14 @@ const KIND = 'one-harness/project-index';
 const VERSION = 1;
 
 /**
- * 规范化一条工程记录 —— 只保留索引自己的四个字段。
+ * 规范化一条工程记录 —— 只保留索引自己的字段。
  * 这一步是**导入方向的唯一入口**：备份文件里可能有额外信息（比如导出时附带的
  * 会话条数，那是给人看的），绝不原样写回 projects.json，否则索引会被外来字段污染。
  * id 缺失视为无效记录（索引靠 id 认工程），由调用方计入 skipped。
+ * ★ `self` 是**索引自己的字段**，必须留着：它标记"这个工程用程序自建的 workspace"，
+ * 丢了之后老记录就只剩一条绝对路径 —— 换台机器（用户拿这份索引去别的电脑导入）
+ * 那条路径就指着上一台机器的盘。store 那边虽有"按路径形状兜底"，但那只是兼容下限，
+ * 不该把导出/导入当漏斗把它过一次滤。
  */
 function normalizeProject(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -26,7 +30,9 @@ function normalizeProject(raw) {
   const name = String(raw.name == null ? '' : raw.name).trim() || '未命名项目';
   const cwd = raw.cwd == null || raw.cwd === '' ? null : String(raw.cwd);
   const createdAt = Number.isFinite(Number(raw.createdAt)) ? Number(raw.createdAt) : Date.now();
-  return { id, name, cwd, createdAt };
+  const out = { id, name, cwd, createdAt };
+  if (raw.self === true) out.self = true;
+  return out;
 }
 
 /**

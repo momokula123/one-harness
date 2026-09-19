@@ -3,7 +3,6 @@
 
 const fsTools = require('./fs');
 const shellTools = require('./shell');
-const pythonTools = require('./python');
 const webTools = require('./web');
 const skillTools = require('./skills');
 const officeTools = require('./office');
@@ -11,7 +10,7 @@ const imageTools = require('./image');
 // 图片后缀/类型只有一套判定（core/images.js），工具报回来的图也走它
 const images = require('../images');
 
-const ALL = [...fsTools.tools, ...shellTools.tools, ...pythonTools.tools, ...webTools.tools, ...skillTools.tools, ...officeTools.tools, ...imageTools.tools];
+const ALL = [...fsTools.tools, ...shellTools.tools, ...webTools.tools, ...skillTools.tools, ...officeTools.tools, ...imageTools.tools];
 
 const byAlias = new Map();
 const byModule = new Map();
@@ -89,4 +88,4 @@ function normalizeImages(list) {
   return out.length ? out : null;
 }
 
-module.exports = { ALL, byAlias, byModule, resolveTool, schemasFor, catalog, execute, classifyCommand: shellTools.classifyCommand, resolvePython: pythonTools.resolvePython };
+module.exports = { ALL, byAlias, byModule, resolveTool, schemasFor, catalog, execute, classifyCommand: shellTools.classifyCommand };

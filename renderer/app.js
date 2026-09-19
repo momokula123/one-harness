@@ -458,10 +458,9 @@ async function init() {
   const remembered = (ws().activeSessionPerProjectIdentifier || {})[S.projectId];
   const target = S.sessions.find((s) => s.id === remembered) || S.sessions[0];
   if (target) await loadSession(target.id);
-  else {
-    $('transcript').innerHTML = '<div class="empty">左侧选一个项目，或用输入框左边的 + 新建一个会话。</div>';
-    renderTop();
-  }
+  else await openDefaultSession(); // ★ 起始页 = 默认对话（One Harness 专用会话）：空状态不再是一句干巴巴的"左边选一个项目"，
+                                   //   直接把新用户领进能用的对话里。openDefaultSession 自带"没项目就补默认项目、
+                                   //   没会话就建专用会话、有就切过去"，跟左栏底部那个入口走同一条路，不另起一套。
   await refreshSkills();
   // 右栏现在是四页：浏览器 / 文件 / 技能 / 工具（设置已搬去模态框）。
   // 默认停在「文件」（用户指定）；落盘值里存的是别的合法页就尊重它，非法/老值（如 'settings'）兜到 files。
@@ -555,7 +554,12 @@ function renderTree() {
     box.appendChild(row);
 
     if (!open) continue;
-    const list = S.tree[p.id] || [];
+    // ★ 专用会话（programId = default-llm）**不列在左栏**：它就是左下角那个固定入口
+    //   （用户原话："默认会话就是下面那个，不要重复"）。列在这里的话左栏会多出一条同名条目，
+    //   跟底部入口看着像两样东西，用户会以为其中一个是多余的、并试着删掉它。
+    //   过滤放在"判空"之前：只有一个专用会话时，这里要照常显示「还没有会话」，
+    //   而不是留一片什么都没有的空白。
+    const list = (S.tree[p.id] || []).filter((s) => s.programId !== DEFAULT_LLM_PROGRAM);
     if (!list.length) {
       const none = treeNode('sub empty-note', '');
       none.querySelector('.nm').textContent = p.id === S.projectId ? '还没有会话' : '—';
@@ -773,6 +777,10 @@ function renderNewSessionMenu() {
   if (!box) return;
   box.innerHTML = '<div class="pop-title">新建会话</div>';
   for (const p of S.programs) {
+    // ★ 专用会话（modelSource === 'fallback'）**不进这个菜单**：它的入口只有左栏底部那一个
+    //   （用户拍板："默认会话就是下面那个，不要重复"）。它仍然留在内核的预设表里 ——
+    //   建会话、取 program、取指令都还要用它，只是不给它第二个入口。
+    if (p.modelSource === 'fallback') continue;
     const el = document.createElement('div');
     el.className = 'pop-item';
     el.title = p.description || '';
@@ -780,15 +788,11 @@ function renderNewSessionMenu() {
     i.className = 'ic';
     i.setAttribute('data-ic', 'chat');
     const nm = document.createElement('span');
-    // 专用会话这一项行为和其他项不同（有就打开、没有才建），名字上标出来
-    nm.textContent = p.modelSource === 'fallback' ? p.label + '（专用会话）' : p.label;
+    nm.textContent = p.label;
     el.appendChild(i);
     el.appendChild(nm);
     el.onclick = () => {
       hideNewSessionMenu();
-      // 专用会话走"打开或新建"：它要的是**那一个**走自带模型的选项卡，
-      // 不是每点一次多一个同名标签（见 openDefaultSession 的说明）。
-      if (p.modelSource === 'fallback') return openDefaultSession();
       createSession(p.id);
     };
     box.appendChild(el);
@@ -1049,14 +1053,20 @@ function renderModelSelect() {
   // 左栏那个固定入口的高亮跟着一起刷新 —— 它俩问的是同一个问题（"当前会话是不是它"），
   // 放在这里就不会出现"chip 说在专用会话里、左栏却没亮"这种不一致。
   renderFootDefault();
+  // 对话区那两个浮动快捷按钮同一个道理：是不是专用会话变了，它俩就该跟着显/隐。
+  renderChatTools();
 }
 
 /** 打开模型下拉 */
 function openModelSelect() {
   // 专用会话的模型是锁死的（会话建出来就带上 modelSource，没有改它的入口）。
-  // 与其给一个按了没反应的下拉，不如直接说清楚该去哪儿换。
+  // 与其给一个按了没反应的下拉，不如直接把人送到**唯一的那个去处**。
+  // 注意措辞：这里以前写的是"想换模型请新建一个普通会话"，用户直接反问
+  // "在 One Harness 里打开了还让我新建会话啥意思？" —— 他要换的是自带那份模型，
+  // 那就该把他送到「设置 → 兜底模型」，而不是让他去开新会话。
   if (sessionUsesFallback()) {
-    toast('这是 ' + DEFAULT_SESSION_LABEL + ' 专用会话：模型固定走程序自带的那份。想换模型请新建一个普通会话；想换自带模型本身去「设置 → 兜底模型」');
+    toast('这是 ' + DEFAULT_SESSION_LABEL + ' 会话：模型固定用程序自带的那份。已打开「设置 → 兜底模型」，换模型在那一张卡里改');
+    openSettings('fallback');
     return;
   }
   const cur = currentModelName();
@@ -1068,23 +1078,17 @@ function openModelSelect() {
     openSettings('general');
     return;
   }
-  // ★ 自带模型不进普通会话的"切换"候选：它有自己的专用会话。
-  // 留一条"切换到这个模型"在这儿，用户点了会以为切好了，实际是把全局设置改了 —— 两回事。
+  // ★ 自带模型**不进**这个下拉：它的入口只有左栏底部那一个（用户拍板"默认会话就是
+  //   下面那个，不要重复"）。以前这里额外挂了一条「…（One Harness）」，同一个会话
+  //   在新建会话菜单 / 模型下拉 / 底部固定项三处都能进 —— 入口一多，"我删了一个另一个就废了"
+  //   这类事就必然发生。现在只留底部那一个。
   const items = list
     .filter((m) => m !== fbName || m === cur)
     .map((m) => ({ value: m, label: m, desc: m === cur ? '当前使用' : '切换到这个模型' }));
-  if (fbName) {
-    items.push({
-      value: DEFAULT_LLM_ENTRY,
-      label: fbName + '（' + DEFAULT_SESSION_LABEL + '）',
-      desc: '程序自带的那份模型：只能用在 ' + DEFAULT_SESSION_LABEL + ' 专用会话里。选它会打开那个会话，不动这里正在用的模型',
-    });
-  }
   openSelect('model-select', items, {
     value: cur,
     width: 256,               // Bionic 的 md 档（16rem）：模型名字长，别跟着 chip 宽度挤
     onPick: async (v) => {
-      if (v === DEFAULT_LLM_ENTRY) return openDefaultSession();
       S.settings = await api.settings.save({ model: { model: v } });
       if (S.session) await api.sessions.update({ projectId: S.projectId, sessionId: S.sessionId, patch: { model: { model: v } } });
       renderModelSelect();
@@ -1101,6 +1105,17 @@ function openModelSelect() {
  * 三个入口都走这里（左栏底部固定项 / 新建会话菜单 / 模型下拉那一项）—— 语义必须一致。
  */
 async function openDefaultSession() {
+  // 没有项目就**自己补一个**（跟开机那个「默认项目」同一条路：同名、cwd 留空让内核去建 workspace）。
+  // 这里以前是一句 toast「先创建项目」然后就返回了 —— 而唯一的那个项目本来就是**开机自动建的**，
+  // 用户把左栏那一行删掉之后（项目行上的 × 是常驻的、真实鼠标点得到），这个入口就永久点不动了。
+  // 真产物 + 真鼠标复现过：删项目 → 再点入口 → 只剩一句"先创建项目"，入口等于废掉。
+  // 入口是"永远能开始对话"的那个东西，它不该依赖用户先去做另一件事。
+  if (!S.projectId) {
+    const p = await api.projects.create({ name: '默认项目' });
+    if (!p || !p.id) { toast('先创建项目', 'err'); return null; }
+    S.projects = await api.projects.list();
+    await setProject(p.id);
+  }
   if (!S.projectId) { toast('先创建项目', 'err'); return null; }
   // "有没有"必须问**数据源**（当前项目的会话列表），不能只看渲染层缓存 S.sessions ——
   // 那份缓存可能落后于磁盘，落后会带来两种坏事：
@@ -1131,12 +1146,30 @@ async function openDefaultSession() {
 function renderFootDefault() {
   const el = $('btn-default-session');
   if (!el) return;
-  const on = sessionUsesFallback();
-  const nm = fallbackModelName();
-  el.classList.toggle('on', on);
-  el.title = on
-    ? '当前就在 ' + DEFAULT_SESSION_LABEL + ' 专用会话里（固定走 ' + (nm || '未配置') + '）'
-    : DEFAULT_SESSION_LABEL + '：走程序自带的那份模型开聊' + (nm ? '（' + nm + '）' : '') + '，不用自己配端点';
+  el.classList.toggle('on', sessionUsesFallback());
+}
+
+/**
+ * 输入框正上方那两个按钮（配置自定义模型 / 绘图）的显隐。
+ * 只在 One Harness 专用会话里出现 —— 普通会话没这两个动作。
+ * 跟 renderFootDefault 一样挂在 renderModelSelect() 里，理由也相同：
+ * 它们问的都是同一个问题（"当前会话是不是那个专用会话"），一处算、一起刷。
+ */
+function renderChatTools() {
+  const box = $('chat-tools');
+  if (!box) return;
+  box.classList.toggle('hidden', !sessionUsesFallback());
+}
+
+/**
+ * 往对话流里塞一条**本地**提示：不发给模型、不写进会话记录，只在本轮界面上出现。
+ * 那两个浮动按钮给的是"指路"这类回执，它就该落在对话里 —— 用 toast 一闪而过的话
+ * 用户会以为按钮点了没反应。
+ */
+function pushNotice(text) {
+  if (!S.sessionId) return;
+  S.transcript.push({ kind: 'notice', id: 'local-' + Date.now(), ts: Date.now(), message: text });
+  renderTranscript();
 }
 
 // ---------------- 会话 ----------------
@@ -1594,6 +1627,18 @@ function renderTranscript() {
       d.className = 'row error-row';
       d.textContent = (row.critical ? '错误：' : '提示：') + row.message;
       box.appendChild(d);
+    } else if (row.kind === 'notice') {
+      // 按**正常回复的样子**排：跟助手消息同一套结构（"助手 + 时间" 一行，下面是正文）。
+      // 一开始写成了灰底系统条，用户一眼就看出不对 —— "你这是正经对话形式吗"。
+      // 它的语义本来就是"程序回你一句"，那就该长得像一句回复。
+      const d = document.createElement('div');
+      d.className = 'row assistant';
+      d.innerHTML = `<div class="meta"><span>助手</span><span>${timeStr(row.ts)}</span></div>`;
+      const b = document.createElement('div');
+      b.className = 'bubble';
+      b.textContent = row.message;
+      d.appendChild(b);
+      box.appendChild(d);
     } else if (row.kind === 'interrupted') {
       const d = document.createElement('div');
       d.className = 'row fork-row';
@@ -1642,12 +1687,34 @@ function fileChip(toolName, argsObj) {
     `<span class="ic" data-ic="file"></span>${esc(raw.split(/[\\/]/).pop())}</button>`;
 }
 
+/**
+ * 生图产出物的**可点链接**：`beach-puppy.png` 这种，点一下用系统程序打开原图。
+ * 为什么要单独一个（不直接用 fileChip）：fileChip 的落点是右栏「带行号的文本视图」，
+ * 图片进那个视图只会是一屏乱码；图片该交给系统看图程序。
+ * 为什么缩略图之外还要这个链接：缩略图有大小上限（4K 生图 11MB 就超过上限、拿不到像素），
+ * 链接没有上限 —— 图再大也点得开。用户报的正是「返回的图片没有超链接」。
+ */
+function imageChips(pics) {
+  if (!Array.isArray(pics) || !pics.length) return '';
+  const wd = (S.meta && S.meta.workingDir) || '';
+  return pics.map((im) => {
+    const rel = String((im && im.rel) || '');
+    if (!rel) return '';
+    const abs = wd ? wd.replace(/[\\/]+$/, '') + '\\' + rel.replace(/^[\\/]+/, '') : rel;
+    return `<button class="file-chip img-link" data-abs="${esc(abs)}" title="打开 ${esc(abs)}（用系统程序）">` +
+      `<span class="ic" data-ic="file"></span>${esc(rel.split(/[\\/]/).pop())}</button>`;
+  }).join('');
+}
+
 function toolCard(call, result) {
   const wrap = document.createElement('div');
   const status = !result ? (S.running ? 'run' : 'wait') : result.isError ? 'err' : 'ok';
   // 被拦下来/要人确认的卡片默认展开，别让用户还得自己去点开看原因
   const gated = !!(result && result.decision && result.decision.action !== 'allow');
-  wrap.className = 'tool' + (status === 'run' || gated ? ' open' : '');
+  // 产出图片的卡片（生图）同样默认展开：图就贴在卡片里，折叠着等于用户看不见 ——
+  // 用户报的就是「图生成完了，对话里既没有图、也没有链接」。
+  const pics = result && Array.isArray(result.images) ? result.images : [];
+  wrap.className = 'tool' + (status === 'run' || gated || pics.length ? ' open' : '');
   let args = call.argsText || '{}';
   let argsObj = null;
   try {
@@ -1662,6 +1729,7 @@ function toolCard(call, result) {
     // 会话里直接给出"这个调用动了哪个文件"，点它就切到带行号的文本视图 ——
     // 不用先去右栏「文件」里翻。path 参数（相对/绝对都认）来自参数 JSON。
     fileChip(call.name, argsObj) +
+    imageChips(pics) +
     `<span class="spacer"></span><span class="time">${status === 'run' ? '执行中…' : timeStr(call.ts || (result && result.ts) || Date.now()) + dur}</span>`;
   const body = document.createElement('div');
   body.className = 'tool-body';
@@ -1697,11 +1765,11 @@ function toolCard(call, result) {
   // 必须放在**所有 innerHTML 赋值之后**：`innerHTML +=` 会把已经 append 进去的节点
   // 序列化再重新解析一遍，先 append 的缩略图会被换成新对象（就是那个"异步填像素填到了
   // 被丢弃的节点上"的老坑）。这里图是给人看的：模型侧仍然只能读到结果里的文本。
-  if (result && Array.isArray(result.images) && result.images.length) {
-    const pics = document.createElement('div');
-    pics.className = 'tool-imgs';
-    for (const im of result.images) pics.appendChild(imgThumb(im));
-    body.appendChild(pics);
+  if (pics.length) {
+    const picsBox = document.createElement('div');
+    picsBox.className = 'tool-imgs';
+    for (const im of pics) picsBox.appendChild(imgThumb(im));
+    body.appendChild(picsBox);
   }
   head.onclick = () => wrap.classList.toggle('open');
   const row = document.createElement('div');
@@ -2336,7 +2404,15 @@ function openLink(href) {
 
 async function refreshFiles() {
   if (!S.projectId) return;
-  S.files = await api.checkpoints.list(S.projectId);
+  try {
+    S.files = await api.checkpoints.list(S.projectId);
+  } catch (e) {
+    // 工程文件夹不可用（绿色版挪到别的电脑、老记录里还写着上一台机器的绝对路径…）时，
+    // 这个调用在 init() 的链路上，抛出去就是整整一页"启动失败"。列表留空、把原因说出来。
+    S.files = [];
+    console.error('[files] 读不到改动记录', e);
+    toast('读不到改动记录：' + ((e && e.message) || e), 'err');
+  }
   if (S.panel === 'files') renderFiles();
 }
 
@@ -2496,18 +2572,18 @@ const SETTINGS_GROUPS = [
 const FALLBACK_CARDS = [
   {
     key: 'llm',
-    name: '语言模型（LLM）',
+    name: '语言模型',
     ctx: true,
     reasoning: true,
-    tip: '「常规 → 模型端点」的 Base URL 与模型名都留空时，对话就走这里；' + DEFAULT_SESSION_LABEL + ' 专用会话也固定走这里。',
-    note: '出厂值来自随包的 config/model.json。这几项留空 = 用出厂值。',
+    tip: '「常规」里没配端点时，对话走这里；' + DEFAULT_SESSION_LABEL + ' 专用会话固定走这里。',
+    note: '留空 = 用出厂值',
     saveId: 'btn-save-fb-llm',
   },
   {
     key: 'image',
-    name: '生图（generate_image）',
-    tip: '所有生图请求都走这里（没有第二个图像端点的概念）。',
-    note: '出厂值来自随包的 config/image.json。agnes 家的模型名是 agnes-image-2.5-flash，地址填到 /v1 即可。',
+    name: '图像生成',
+    tip: 'generate_image 走这里。',
+    note: '留空 = 用出厂值',
     saveId: 'btn-save-fb-image',
   },
 ];
@@ -2552,9 +2628,6 @@ const SETTINGS_SECTIONS = {
         <div class="field"><label>API Key</label><input id="set-apiKey" value="${esc(own.apiKey)}" /></div>
         <div class="field"><label>模型</label><input id="set-model" value="${esc(own.model)}" list="model-options" placeholder="留空 = 用兜底模型" /></div>
         <datalist id="model-options">${(S.models || []).map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
-        <div class="hint">${usingFallback
-          ? `现在<b>没有</b>用自己的端点（Base URL 与模型名都留空），整套走「兜底模型」：<code>${esc(s.model.model)}</code> @ <code>${esc(s.model.baseUrl)}</code>。想换成自己的，把上面两项都填上即可。`
-          : '现在用的是你自己配的这一组。'}上面这几项**要么都填、要么都别填**：只填一半时不会去兜底那份里"借"缺的那一项（把兜底家的 Key 发到你家地址上，是不会报错的那种错），而是整个按你填的来。</div>
         <div class="field">
           <label class="chk"><input type="checkbox" id="set-vision"${s.model.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
           <div class="hint">勾上之后，拖进输入框的图片会随消息一起交给模型。端点不会告诉程序"这个模型能不能看图"（/v1/models 只回 id），所以只能在这里声明。勾错了也不至于卡死：程序会剥掉图按纯文本重发一次，并提示你来这里取消勾选。</div>
@@ -2578,8 +2651,8 @@ const SETTINGS_SECTIONS = {
           <button id="btn-export-index">导出工程索引</button>
           <button id="btn-import-index" class="ghost">导入工程索引</button>
         </div>
-        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。索引是**指针**（每个工程的 id / 名字 / 工程文件夹地址，几 KB）。会话记录**不在索引里** —— 它就在工程文件夹自己的 .one-harness 子目录下，跟着文件夹走：把文件夹带到哪，对话就跟到哪。</div>
-        <div class="hint">导入是**只增不减**的：同一个工程（id 相同）会被跳过，本机已有的名字与工作目录不会被备份里的旧值覆盖；本机多出来的工程也不受影响。</div>
+        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。索引只是指针（id / 名字 / 工程文件夹地址），对话记录不在索引里 —— 它就在工程文件夹的 .one-harness 下，跟着文件夹走。</div>
+        <div class="hint">导入只增不减：同一个工程会被跳过，本机已有的名字与工作目录不会被备份里的旧值覆盖。</div>
       `;
     },
     bind() {
@@ -2650,23 +2723,23 @@ const SETTINGS_SECTIONS = {
         // 语言模型那张**永远**有人用：除了"常规里没填时顶上"，还有 One Harness 专用会话。
         // 所以它在用户在「常规」里配了端点之后也不能写"未使用" —— 那会是一句假话。
         const state = c.key === 'llm'
-          ? (ownInUse ? { cls: 'state-off', tag: '专用会话在用', why: '你在「常规」里配了自己的端点，所以普通会话走你那套；但左栏那个 ' + DEFAULT_SESSION_LABEL + ' 专用会话**始终**走这里。' }
-                      : { cls: 'state-on', tag: '正在生效', why: '「常规」里没配端点：普通对话和 ' + DEFAULT_SESSION_LABEL + ' 专用会话都走这里。' })
-          : { cls: 'state-on', tag: '生图就是走它', why: 'generate_image 只有这一个端点，没有"第二套"可切。' };
+          ? (ownInUse ? { cls: 'state-off', tag: '仅专用会话', why: '普通会话走你在「常规」里配的那套。' }
+                      : { cls: 'state-on', tag: '正在生效', why: '' })
+          : { cls: 'state-on', tag: '正在生效', why: '' };
         return `
         <div class="fb-card ${state.cls}">
           <div class="fb-card-top">
             <span class="fb-card-name">${esc(c.name)}</span>
             <span class="pill ${state.cls === 'state-on' ? 'mint' : ''}">${esc(state.tag)}</span>
           </div>
-          <div class="hint">${esc(c.tip + state.why)}</div>
+          <div class="hint">${esc(state.why ? c.tip + ' ' + state.why : c.tip)}</div>
           <div class="field"><label>Base URL</label><input id="fb-${c.key}-baseUrl" value="${esc(e.baseUrl)}" /></div>
           <div class="field"><label>API Key</label><input id="fb-${c.key}-apiKey" value="${esc(e.apiKey)}" /></div>
-          <div class="field"><label>模型</label><input id="fb-${c.key}-model" value="${esc(e.model)}" list="model-options" /></div>
-          ${c.ctx ? `<div class="field"><label>上下文长度</label><input id="fb-${c.key}-ctx" type="number" step="1024" value="${esc(e.contextLength)}" placeholder="留空 = 用出厂值" /><div class="hint">这个模型自带的上下文大小（token）。它决定自动压缩的阈值和界面上的占用条 —— agnes-3.0-flash 是 524288（512K）。「常规」里那个同名框是**你自己端点**的，两者各管各的；正在用哪一套，就按那一套的算。</div></div>` : ''}
+          <div class="field"><label>模型</label><input id="fb-${c.key}-model" value="${esc(e.model)}"${c.ctx ? ' list="model-options"' : ''} /></div>
+          ${c.ctx ? `<div class="field"><label>上下文长度</label><input id="fb-${c.key}-ctx" type="number" step="1024" value="${esc(e.contextLength)}" placeholder="留空 = 用出厂值" /><div class="hint">决定自动压缩的阈值与界面上的占用条。</div></div>` : ''}
           ${c.reasoning ? `<div class="field"><label>思考强度</label>
             <button id="fb-${c.key}-reasoning" class="sel-trigger" aria-haspopup="listbox" aria-expanded="false" data-v="${esc(e.reasoning || '')}"><span class="sel-label">${esc(reasoningLabelOf(e.reasoning))}</span><span class="ic" data-ic="chevron"></span></button>
-            <div class="hint">就是请求里的 <code>reasoning_effort</code>：「不思考」出话快、适合日常；调高之后模型会先想一段再答（响应明显变慢，思考过程会显示在气泡里）。取值只能从下拉里那几个里选 —— 这是端点自己定的字面值，乱填（或大小写不对）它直接回 400。<br />这一项<b>只作用于兜底这份端点</b>：你要是配了自己的模型，它永远不会被带上（在「常规」里配了端点时，这里改什么都不影响你正在用的那套）。</div>
+            <div class="hint">推理强度。只作用于这份兜底端点，不影响你在「常规」里配的模型。</div>
           </div>` : ''}
           <div class="fb-card-foot">
             <button id="${c.saveId}" class="primary">保存</button>
@@ -2676,7 +2749,7 @@ const SETTINGS_SECTIONS = {
       }).join('');
       return `
         <div class="group-title">兜底模型</div>
-        <div class="hint">这两张卡是**没配置时顶上来的那套**：语言模型那张在「常规 → 模型端点」没填时顶上，生图那张则是 generate_image 工具唯一的出处。两张卡与"正在用的模型"分开存放 —— 在这儿改不会动到正在跑的那套，反之也一样（这正是"能用兜底去配置 One Harness、却不会把程序自己配死"的前提）。<br />语言模型那张还多一个去处：左栏底部那个<b>${DEFAULT_SESSION_LABEL}</b>固定入口（就在「设置」上方），点进去就是专用会话 —— 它始终走这里（哪怕你在「常规」里配了自己的端点）。想在不动自己模型的前提下用自带模型，就从那个入口进；「新建会话」菜单和模型下拉里也能进，说的是同一个会话。<br />每项**留空 = 用随包 config/ 里的出厂值**；想用自己的 key（例如自己去 agnes 注册领一个），填进来保存即可。</div>
+        <div class="hint">不填就用程序自带的那套；在这里改动不影响「常规」里正在用的模型。</div>
         <div class="fb-cards">${cards}</div>
       `;
     },
@@ -2934,17 +3007,15 @@ const SETTINGS_SECTIONS = {
       const s = S.settings;
       return `
         <div class="group-title">工具</div>
-        <div class="field"><label>Python 可执行文件</label><input id="set-python" value="${esc(s.python.executable)}" placeholder="留空则自动探测" /></div>
         <div class="field"><label>Shell</label><input id="set-shell" value="${esc(s.shell.shellPath)}" /></div>
         <div class="field"><label>联网搜索端点（SearxNG JSON API）</label><input id="set-search" value="${esc(s.web.searchEndpoint)}" placeholder="例如 http://127.0.0.1:8888" /></div>
         <div class="row-inline"><button id="btn-save-tools" class="primary">保存</button></div>
-        <div class="hint">Bionic 的正式版会把这个分区藏起来（只在内部构建里显示），我们保留，因为 Python / Shell 路径是这里唯一能改的地方。</div>
+        <div class="hint">Bionic 的正式版会把这个分区藏起来（只在内部构建里显示），我们保留，因为 Shell 路径是这里唯一能改的地方。</div>
       `;
     },
     bind() {
       on('btn-save-tools', async () => {
         S.settings = await api.settings.save({
-          python: { executable: $('set-python').value.trim() },
           shell: { shellPath: $('set-shell').value.trim() },
           web: { searchEndpoint: $('set-search').value.trim() },
         });
@@ -3088,6 +3159,9 @@ function bind() {
   $('btn-close-right').onclick = () => toggleSide('right');
   $('btn-tab-new').onclick = () => createSession('omni');
   bindBrowser();
+  // 横幅上的「忽略」：把横幅收掉。之前这个按钮**从头到尾没绑过** ——
+  // 只有旁边的「处理/去设置」在 showBanner 里绑了 onclick，「忽略」是个死按钮（点了没反应）。
+  $('banner-close').onclick = hideBanner;
   // 会话里的文件 chip：点一下切到「文件」面板的文本视图（带行号）。
   // 用事件委托，因为转录是整体重渲染的，逐个绑会在重渲染后失效。
   const tr = $('transcript');
@@ -3097,6 +3171,9 @@ function bind() {
       if (!chip) return;
       e.preventDefault();
       e.stopPropagation();
+      // 生图产出物那条链接：用系统看图程序打开原图。
+      // 不能走下面的「文件」面板文本视图 —— 那是给代码/文本看的，图片进去是一屏乱码。
+      if (chip.classList.contains('img-link')) { api.shell.openPath(chip.getAttribute('data-abs')); return; }
       switchPanel('files');
       previewFile(chip.getAttribute('data-abs'));
     });
@@ -3106,6 +3183,9 @@ function bind() {
   // 左栏底部那个固定入口：打开/新建「One Harness」专用会话（有就打开、没有才建）。
   // 位置在设置**上方**，常驻不随项目树滚动 —— 见 index.html 的 .side-footer。
   $('btn-default-session').onclick = () => openDefaultSession();
+  // 专用会话里那两个浮动按钮
+  $('ct-config-model').onclick = () => pushNotice('要配置自定义模型 请前往[设置]-[常规]里填写');
+  $('ct-draw').onclick = () => pushNotice('生图您可以跟我说如下方式：“帮我生成一个海边的小狗 4K 16:9”');
   $('btn-open-settings').onclick = () => openSettings();
   // 左栏收起时的兜底入口（见 index.html 的注释）：不补的话收起左栏就没法开设置了
   $('btn-open-settings-rail').onclick = () => openSettings();

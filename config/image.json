@@ -1,7 +1,8 @@
 {
   "_说明": "出厂兜底**生图**端点。generate_image 工具打的就是这里；只有当「设置 → 兜底模型 → 生图」那张卡三项都留空时才生效（在卡片里填了就以卡片为准）。换端点改这个文件即可，不用动代码；换版本文件夹时记得把这份带过去。baseUrl 填到 /v1 就行，多抄了 /images/generations 会被程序自动剥掉。",
-  "_字段": "baseUrl = 端点地址（OpenAI 兼容的图片接口，填到 /v1）；apiKey = 密钥，没有就留空字符串；model = 模型名，agnes 家是 agnes-image-2.5-flash（1K/2K/3K/4K 档位、支持文生图/图生图/多图合成，当前免费）。",
+  "_字段": "baseUrl = 端点地址（OpenAI 兼容的图片接口，填到 /v1）；apiKey = 密钥，没有就留空字符串；model = 模型名，agnes 家是 agnes-image-2.5-flash（1K/2K/3K/4K 档位、支持文生图/图生图/多图合成，当前免费）；models = **这个端点只让选哪些模型**（数组，留空/不写 = 不限制）。它只作用于这一份出厂端点，跟「设置 → 常规」里你自己配的那套无关。",
   "baseUrl": "https://apihub.agnes-ai.com/v1",
   "apiKey": "sk-XqgVSEq2iJTzWiMThvNTauf2XwNmnMTXbjZOQbMWkGjgVX7E",
-  "model": "agnes-image-2.5-flash"
+  "model": "agnes-image-2.5-flash",
+  "models": ["agnes-image-2.5-flash"]
 }

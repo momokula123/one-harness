@@ -269,6 +269,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* ---------- 主列 ---------- */
 #main-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.chat-tool {
+  background: #fff; border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 13px; font-size: 12px; color: var(--text-2); cursor: pointer;
+  box-shadow: var(--shadow-card);
+}
+.chat-tool:hover { background: var(--bg-3); border-color: #d5d5da; color: var(--text); }
 
 /* ---------- 转录 ---------- */
 /* scrollbar-gutter: stable both-edges 是这里的关键：
@@ -400,6 +406,10 @@ pre { margin: 0; }
 .hr { height: 1px; background: var(--line-soft); margin: 2px 0 12px; }
 
 /* ---------- 输入区 ---------- */
+/* 输入框正上方的两个快捷按钮（One Harness 专用会话里才有）：
+   跟输入框共用同一条居中栏宽、左对齐、并排横放。 */
+.chat-tools { max-width: 760px; margin: 0 auto 8px; display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.chat-tools.hidden { display: none; }
 .composer { flex: none; padding: 8px 34px 12px; background: var(--bg); }
 .composer-box {
   border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff;

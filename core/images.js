@@ -105,17 +105,20 @@ function estimateTokens(width, height) {
  * 读一张图，产出上线要用的全部信息。
  * 返回 { ok:true, dataUrl, mime, bytes, width, height, tokens, oversize }
  *   或 { ok:false, error }（error 是给用户看的中文）
+ * opts.maxBytes：给**界面缩略图**单独放宽的上限（4K 生图能到 11MB 以上；喂给模型那条仍走 MAX_BYTES）。
+ *   上限进缓存键 —— 否则界面先缓存了 12MB 的图，模型那条读同一张会命中缓存、绕开大小限制。
  */
-function inspect(absPath) {
+function inspect(absPath, opts) {
+  const cap = (opts && Number(opts.maxBytes)) || MAX_BYTES;
   try {
     const st = fs.statSync(absPath);
     if (!st.isFile()) return { ok: false, error: '不是文件' };
     const mime = mimeFor(absPath);
     if (!mime) return { ok: false, error: '不是支持的图片格式' };
-    if (st.size > MAX_BYTES) {
-      return { ok: false, error: `这张图 ${(st.size / 1048576).toFixed(1)}MB，超过 ${MAX_BYTES / 1048576}MB 上限，先压缩一下` };
+    if (st.size > cap) {
+      return { ok: false, error: `这张图 ${(st.size / 1048576).toFixed(1)}MB，超过 ${cap / 1048576}MB 上限，先压缩一下` };
     }
-    const key = mime + ':' + st.size + ':' + st.mtimeMs;
+    const key = mime + ':' + st.size + ':' + st.mtimeMs + ':' + cap;
     const hit = cache.get(absPath);
     if (hit && hit.key === key) return hit.value;
 

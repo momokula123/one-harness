@@ -106,9 +106,6 @@ const DEFAULT_SETTINGS = {
     timeoutMs: 120000,
     shellPath: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
   },
-  python: {
-    executable: process.platform === 'win32' ? 'python' : 'python3',
-  },
   web: {
     searchEndpoint: '',        // 留空则关闭联网搜索；填 SearxNG 实例地址即可
     fetchTimeoutMs: 20000,
@@ -158,6 +155,25 @@ function init() {
   if (!fs.existsSync(SETTINGS_FILE)) writeJsonAtomic(SETTINGS_FILE, DEFAULT_SETTINGS);
   if (!fs.existsSync(PROJECTS_FILE)) writeJsonAtomic(PROJECTS_FILE, { projects: [] });
   ensureDir(path.join(DATA_DIR, 'skills'));
+  migrateSelfWorkspaces();
+}
+
+/**
+ * 老记录补丁：把"自建 workspace"那几条标上 self、并把 cwd 改写成当前数据目录下的路径。
+ * 起因：绿色版被拷到别的电脑后，老记录里的绝对路径还指着上一台机器的盘
+ * （`...\data\projects\<id>\workspace`），程序就去那儿建目录 → EPERM → 启动失败。
+ * 只动 projects.json 里这两处，别的一律不碰；没得改就不写盘。
+ */
+function migrateSelfWorkspaces() {
+  const db = readJson(PROJECTS_FILE, { projects: [] });
+  let changed = false;
+  for (const p of db.projects || []) {
+    if (!p || !p.id || !isSelfWorkspace(p)) continue;
+    const now = path.join(PROJECTS_DIR, p.id, 'workspace');
+    if (p.self !== true) { p.self = true; changed = true; }
+    if (path.resolve(String(p.cwd || '')) !== path.resolve(now)) { p.cwd = now; changed = true; }
+  }
+  if (changed) writeJsonAtomic(PROJECTS_FILE, db);
 }
 
 /**
@@ -177,10 +193,27 @@ function readFactory(name) {
       const n = Number(c.contextLength);
       out.contextLength = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
       out.reasoning = normalizeReasoning(c.reasoning);
+      // models：这个端点**只让选哪些模型**（可选）。空数组 = 不限制（端点列出什么就全给）。
+      // 只认字符串、去掉空白与空串；写成一个字符串（而不是数组）也算没写 —— 不猜。
+      out.models = Array.isArray(c.models)
+        ? c.models.map((m) => String(m || '').trim()).filter(Boolean)
+        : [];
       return out;
     }
   }
-  return { baseUrl: '', apiKey: '', model: '', contextLength: 0, reasoning: '' };
+  return { baseUrl: '', apiKey: '', model: '', contextLength: 0, reasoning: '', models: [] };
+}
+
+/**
+ * 出厂端点"只让选哪些模型"的名单（配置里那个 models 数组）。
+ * **默认只取语言模型那份**（config/model.json）：生图那份（config/image.json）是给
+ * generate_image 用的，混进对话模型的候选列表里只会让人在下拉里看到一个
+ * agnes-image-2.5-flash —— 它根本不支持对话，选了必然报错。
+ * 空数组 = 不限制。**只作用于出厂这一份端点**：用户自己在「常规」里配了端点时，
+ * 拉出来的列表一律不经过这里（他的端点有什么就该给什么）。
+ */
+function factoryAllowlist(name = 'model') {
+  return (readFactory(name).models || []).slice();
 }
 
 // 0.1.10 时的名字（出厂默认端点就是语言模型那份），保留以免旧探针/脚本断掉。
@@ -298,6 +331,8 @@ function saveSettings(patch) {
   const raw = readJson(SETTINGS_FILE, {});
   const base = deepMerge(DEFAULT_SETTINGS, raw);
   const next = deepMerge(base, stripDerived(patch));
+  // 「Python 执行」工具已整体移除，settings.json 里可能还留着老键，顺手摘掉
+  delete next.python;
   const factories = { llm: readFactory('model'), image: readFactory('image') };
   for (const which of ['llm', 'image']) {
     const f = factories[which];
@@ -352,18 +387,47 @@ function createProject(name, cwd) {
     if (same) return same;
   }
   const id = newId();
-  const root = want && fs.existsSync(want) ? want : path.join(PROJECTS_DIR, id, 'workspace');
+  // 自建的 workspace 要打 self 标记：它的路径以后**现算**（跟着当前数据目录走），
+  // 记录里那份绝对路径只当显示用 —— 否则绿色版一挪地方，它就指向上一台机器的盘。
+  const self = !(want && fs.existsSync(want));
+  const root = self ? path.join(PROJECTS_DIR, id, 'workspace') : want;
   ensureDir(root);
   const project = { id, name: name || '未命名项目', cwd: root, createdAt: Date.now() };
+  if (self) project.self = true;
   const db = readJson(PROJECTS_FILE, { projects: [] });
   db.projects.push(project);
   writeJsonAtomic(PROJECTS_FILE, db);
   return project;
 }
 
+/**
+ * 这个工程的文件夹是不是"程序自建的那个 workspace"（只有它才归程序自己管）。
+ * 判据两条：
+ *  1. 登记时打了 self 标记（新记录都有）；
+ *  2. 路径**形状**正好是 <任意数据目录>/projects/<本工程 id>/workspace —— 老记录只有路径。
+ * 为什么按形状判、不按 `path.join(PROJECTS_DIR, id, 'workspace')` 前缀比：
+ * 绿色版被拷到别的盘/别的电脑之后，老记录里那个绝对路径的前缀**已经不是当前数据目录**了，
+ * 前缀比会漏判 → 程序就会跑去别人的 C:\Users\... 里建目录（EPERM）。
+ */
+function isSelfWorkspace(p) {
+  if (!p) return false;
+  if (p.self === true) return true;
+  if (!p.cwd) return false;
+  const parts = String(p.cwd).split(/[\\/]+/).filter(Boolean);
+  const n = parts.length;
+  return (
+    n >= 3 &&
+    parts[n - 1].toLowerCase() === 'workspace' &&
+    parts[n - 2].toLowerCase() === String(p.id || '').toLowerCase() &&
+    parts[n - 3].toLowerCase() === 'projects'
+  );
+}
+
 /** 工程文件夹 —— 用户自己的目录，也是记录的落脚点。读路径，不建目录。 */
 function projectRoot(projectId) {
   const p = getProject(projectId);
+  // 自建 workspace：**现算**，永远贴着当前数据目录 —— 记录里那份绝对路径只在老版本/老记录里
+  if (p && isSelfWorkspace(p)) return path.join(PROJECTS_DIR, p.id, 'workspace');
   if (p && p.cwd) return p.cwd;
   // 索引里没有这一行、或那一行没有 cwd：退回它自建的 workspace
   return path.join(PROJECTS_DIR, projectId, 'workspace');
@@ -414,7 +478,6 @@ function projectDeleteInfo(projectId) {
   if (!p) return null;
   let sessionCount = 0;
   try { sessionCount = listSessions(projectId).length; } catch (_) { sessionCount = 0; }
-  const selfWs = path.join(PROJECTS_DIR, projectId, 'workspace');
   return {
     id: p.id,
     name: p.name,
@@ -422,7 +485,7 @@ function projectDeleteInfo(projectId) {
     root: p.cwd || null,
     recordDir: projectDataDir(projectId),
     sessionCount,
-    selfWorkspace: !!p.cwd && path.resolve(p.cwd) === path.resolve(selfWs),
+    selfWorkspace: isSelfWorkspace(p),
   };
 }
 
@@ -519,8 +582,32 @@ function listSessions(projectId) {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+/**
+ * 会话的工作目录也要跟着工程走 —— 建会话那一刻的绝对路径被写死在记录里
+ * （core/session.js 的 `workingDir`），绿色版换机器/换盘之后它就指着**上一台机器的盘**；
+ * 而工具沙箱根（`core/tools/fs.js resolveIn`）、拖入落点（`files:attach`）、
+ * 取缩略图像素（`files:preview`）全用它 → 一操作就是 EPERM。
+ * 两条边界，别越：
+ *  1. **只修"工程本身就是自建 workspace"的那种**（`isSelfWorkspace(p)`），且会话里那条
+ *     路径形状确实是 `<某个数据目录>/projects/<本工程 id>/workspace` —— 用户自己选的目录
+ *     一律不碰（那可能只是移动盘没插，改了等于替用户做决定）。
+ *  2. **读的时候现算**：loadSession 改的是内存里那份，盘上的记录不动。它会**顺带**落盘
+ *     （`sessions:update` 那种"读一份、改、存回去"的路径会把改好的值写进记录）——
+ *     这是**想要的**：写回去的是当前这台机器的正确路径，等于把老记录顺手治好了；
+ *     而"用户自己选的目录"永远不满足第 1 条，所以用户的选择不会被改掉。
+ */
+function fixSessionWorkingDir(projectId, s) {
+  if (!s) return s;
+  const p = getProject(projectId);
+  if (!p || !isSelfWorkspace(p)) return s;
+  if (!isSelfWorkspace({ id: projectId, cwd: s.workingDir })) return s;
+  const now = path.join(PROJECTS_DIR, projectId, 'workspace');
+  if (path.resolve(String(s.workingDir || '')) !== path.resolve(now)) s.workingDir = now;
+  return s;
+}
+
 function loadSession(projectId, sessionId) {
-  return readJson(sessionFile(projectId, sessionId), null);
+  return fixSessionWorkingDir(projectId, readJson(sessionFile(projectId, sessionId), null));
 }
 
 function saveSession(projectId, session) {
@@ -548,7 +635,7 @@ function uniquePath(dir, base, ext) {
 module.exports = {
   ROOT, APP_ROOT, DATA_DIR, PROJECTS_DIR, SETTINGS_FILE, DEFAULT_SETTINGS,
   init, ensureDir, readJson, writeJsonAtomic, deepMerge, getSettings, saveSettings,
-  readDefaultModel, readFactory, factoryFiles, fillEndpoint, hasOwnEndpoint, ENDPOINT_KEYS,
+  readDefaultModel, readFactory, factoryFiles, factoryAllowlist, fillEndpoint, hasOwnEndpoint, ENDPOINT_KEYS,
   swapFallback, endpointFor, REASONING_LEVELS, normalizeReasoning,
   DEFAULT_MODEL_FILES, DEFAULT_IMAGE_FILES,
   newId, shortId, listProjects, createProject, getProject, updateProject, deleteProject,

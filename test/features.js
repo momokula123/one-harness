@@ -33,6 +33,17 @@
     rejections.push(String((e.reason && (e.reason.message || e.reason)) || e.reason));
   });
 
+  // ============ Z0. 起始页 = 默认对话（0.1.16：新用户开机直接被领进能用的会话） ============
+  prog("Z0. 起始页 = 默认对话");
+  {
+    const st0 = S.session && S.session.programId === 'default-llm' && S.session.modelSource === 'fallback';
+    check('Z0a 开机自动进入了 One Harness 专用会话（programId=default-llm）',
+      st0, S.session ? { programId: S.session.programId, modelSource: S.session.modelSource } : '没有会话');
+    const projs0 = await api.projects.list();
+    check('Z0b 开机自动补了默认项目（不用用户先去建项目）',
+      S.projectId && projs0.some((p) => p.id === S.projectId), { projectId: S.projectId, n: projs0.length });
+  }
+
   // ============ A. 新建项目对话框（用户报的那个 bug） ============
   prog("A. 新建项目对话框（用户报的那个 bug）");
   $id('btn-new-project').click();
@@ -557,29 +568,40 @@
     check('O4 普通会话的模型下拉里有别的模型（探针有区分度，不是空下拉）',
       mItems.some((x) => x.v === 'zz-inspector-model'), JSON.stringify(mItems.map((x) => x.v)));
     check('O5 ★ 里面没有"把兜底模型切到这个会话"这一项', !mItems.some((x) => x.v === fbName), JSON.stringify(mItems));
-    check('O6 ★ 取而代之的是"打开专用会话"那条入口',
-      mItems.some((x) => x.v === '@default-llm' && /专用会话/.test(x.d || '')),
-      JSON.stringify(mItems.filter((x) => x.v === '@default-llm')));
+    // 这一条 2026-09-19 反过来了：下拉里以前额外挂了一条「…（One Harness）」，
+    // 用户拍板"默认会话就是下面那个，不要重复" —— 现在入口只留左栏底部那一个。
+    check('O6 ★ 也没有"打开专用会话"那条入口（入口只剩左栏底部一个）',
+      !mItems.some((x) => x.v === '@default-llm'), JSON.stringify(mItems.filter((x) => x.v === '@default-llm')));
     closeSelect();
     S.settings = await api.settings.save({ model: savedOwn });   // 还原：别把巡检造的假端点留下来
     S.models = [];
     await wait(300);
 
-    // ---- O7~O12 从「新建会话」菜单里把专用会话真的建出来 ----
+    // ---- O7~O12 专用会话从**唯一的那个入口**（左栏底部固定项）建出来 ----
+    // 以前这里走的是「新建会话」菜单，因为那时菜单里挂着一条。用户拍板"不要重复"之后
+    // 菜单里那条已经撤掉，所以 O7 现在反过来断言它不在了。
     const sessBefore2 = (await api.sessions.list(proj.id)).length;
     showNewSessionMenu();
     await wait(300);
     const menuItems = [...document.querySelectorAll('#new-session-menu .pop-item')];
-    check('O7 「新建会话」里有「One Harness（专用会话）」这一项',
-      menuItems.some((e) => e.innerText.includes('One Harness')), JSON.stringify(menuItems.map((e) => e.innerText.trim())));
-    menuItems.find((e) => e.innerText.includes('One Harness')).click();
+    check('O7 ★「新建会话」菜单里**没有**专用会话这一项（入口只有左栏底部那一个）',
+      !menuItems.some((e) => /专用会话|One Harness/.test(e.innerText)),
+      JSON.stringify(menuItems.map((e) => e.innerText.trim())));
+    hideNewSessionMenu();
+    await wait(200);
+    $id('btn-default-session').click();
     await wait(1500);
 
     const list2 = await api.sessions.list(proj.id);
     const pinnedMeta = list2.find((s) => s.programId === 'default-llm');
     check('O8 专用会话真的建出来了', !!pinnedMeta, JSON.stringify(list2.map((s) => s.programId)));
-    check('O9 它没有把别的会话搞多（就新建了一个）',
-      list2.length === sessBefore2 + 1 && !!pinnedMeta, { before: sessBefore2, after: list2.length });
+    // O9 的本意是"点入口不会重复建一堆"。0.1.16 起始页=默认对话之后，开机时专用会话
+    // 就已经建好了（本项目在 init 里被 openDefaultSession 自动领进去），这里点入口走的是
+    // 判重复用（+0），所以断言从"恰好新建一个"改成"专用会话恰好一个、总数没有失控"。
+    check('O9 它没有把别的会话搞多（专用会话恰好一个，总数最多 +1）',
+      list2.filter((s) => s.programId === 'default-llm').length === 1 &&
+        list2.length <= sessBefore2 + 1 && !!pinnedMeta,
+      { before: sessBefore2, after: list2.length, pinned: list2.filter((s) => s.programId === 'default-llm').length });
     const loadedPin = pinnedMeta ? await api.sessions.load({ projectId: proj.id, sessionId: pinnedMeta.id }) : {};
     check('O10 ★ 内核给这个会话打上了 modelSource=fallback（端点整组走兜底）',
       (loadedPin.session || {}).modelSource === 'fallback', JSON.stringify((loadedPin.session || {}).modelSource));
@@ -587,6 +609,13 @@
       $id('model-name').textContent === fbName, $id('model-name').textContent);
     check('O12 顶栏有「One Harness」这枚标签，说明这个模型是从哪儿来的',
       $id('session-pills').innerText.includes('One Harness'), $id('session-pills').innerText);
+    // O12b：同名胶囊只能有一枚。2026-09-19 真产物截图里这里是 **两枚一模一样的
+    // 「One Harness」**（程序预设那枚 + 专用会话标记那枚，label 撞名了）——
+    // 用户看到的就是"重复"。程序预设的 label 已改回「默认模型」。
+    const pillTexts = [...document.querySelectorAll('#session-pills .pill')].map((e) => e.textContent.trim());
+    check('O12b ★ 同名胶囊只有一枚（程序预设那枚叫「默认模型」，不再跟它撞名）',
+      pillTexts.filter((t) => t === 'One Harness').length === 1 && pillTexts.includes('默认模型'),
+      JSON.stringify(pillTexts));
 
     // ---- O13/O14 专用会话里模型是锁死的；同一动作在普通会话里必须是有反应的 ----
     $id('model-select').click();
@@ -633,7 +662,61 @@
     await wait(400);
     check('O20 反向对照：回到普通会话后它又灭了 —— 证明 O19 不是"一直是 on"',
       !foot.classList.contains('on'), foot.className);
+    // O21：左栏会话列表里**不该**再出现专用会话那一条（用户："默认会话就是下面那个，不要重复"）。
+    // 它列在树里时跟底部入口看着像两样东西，用户会去删其中一个。
+    const treeSubs = [...document.querySelectorAll('#project-tree .sub')].map((e) => e.textContent.trim());
+    check('O21 ★ 左栏会话列表里没有专用会话那一条（它只由底部那个入口代表）',
+      !treeSubs.includes('One Harness'), JSON.stringify(treeSubs));
     await wait(300);
+
+    // ---- O22~O26 专用会话里、输入框正上方那两个按钮 ----
+    // 用户要的：进这个会话后，输入框上方并排两个按钮，左边"配置自定义模型"、右边"绘图"；
+    // 点它们**在对话里回一句话**（不是 toast）。
+    const ctBox = $id('chat-tools');
+    check('O22 普通会话里这对按钮是隐藏的（反向对照，证明不是"一直显示"）',
+      !!ctBox && ctBox.classList.contains('hidden'), ctBox && ctBox.className);
+    check('O23 左栏那个入口的悬停提示只剩「基础对话」这一句',
+      foot.title === '基础对话', foot.title);
+
+    foot.click();
+    await wait(1000);
+    const ctA = ctBox && ctBox.children[0];
+    const ctB = ctBox && ctBox.children[1];
+    const ra = ctA && ctA.getBoundingClientRect();
+    const rb = ctB && ctB.getBoundingClientRect();
+    const rIn = $id('input').getBoundingClientRect();
+    check('O24 ★ 进专用会话后两个按钮露出来，且并排横放在输入框上方（左起第一个是「配置自定义模型」）',
+      !!ctBox && !ctBox.classList.contains('hidden') &&
+        !!ctA && ctA.id === 'ct-config-model' &&
+        !!ctB && ctB.id === 'ct-draw' &&
+        !!ra && !!rb &&
+        ra.right <= rb.left + 1 &&                        // 左 → 右 并排
+        Math.abs(ra.top - rb.top) <= 2 &&                 // 同一行（不是上下两行）
+        ctBox.getBoundingClientRect().bottom <= rIn.top + 1, // 整体在输入框上面
+      ctBox && ctBox.className);
+
+    const rowsBefore = document.querySelectorAll('#transcript .row').length;
+    $id('ct-config-model').click();
+    await wait(400);
+    let rows = [...document.querySelectorAll('#transcript .row')];
+    let last = rows[rows.length - 1];
+    check('O25 ★ 「配置自定义模型」在对话里回一条**助手样式**的消息（不是灰底系统条）',
+      rows.length === rowsBefore + 1 && !!last && last.classList.contains('assistant') &&
+        !!last.querySelector('.meta') && last.textContent.includes('要配置自定义模型 请前往[设置]-[常规]里填写'),
+      last ? last.textContent.slice(0, 60) : '(没有新行)');
+
+    $id('ct-draw').click();
+    await wait(400);
+    rows = [...document.querySelectorAll('#transcript .row')];
+    last = rows[rows.length - 1];
+    check('O26 ★ 「绘图」也在对话里回一条助手样式的消息，文案指路',
+      rows.length === rowsBefore + 2 && !!last && last.classList.contains('assistant') &&
+        last.textContent.includes('生图您可以跟我说如下方式') &&
+        last.textContent.includes('帮我生成一个海边的小狗 4K 16:9'),
+      last ? last.textContent.slice(0, 80) : '(没有新行)');
+
+    await loadSession(ordinary.id);
+    await wait(400);
   }
 
   // ============ K. 运行状态按会话记账（老代码会永久卡死的那个） ============

@@ -36,7 +36,7 @@
            位置按要求固定在**设置上方**，且常驻 —— .side-footer 在滚动容器(.tree-wrap)之外，
            项目树再长也不会把它顶走。
            它只是"更显眼的那一个入口"：新建会话菜单、模型下拉里的同名入口原样保留。 -->
-      <div class="side-foot-row" id="btn-default-session" title="One Harness：走程序自带的那份模型开聊，不用自己配端点" data-page-node-id="FootRowDefault00001">
+      <div class="side-foot-row" id="btn-default-session" title="基础对话" data-page-node-id="FootRowDefault00001">
         <span class="ic" data-ic="chip" data-page-node-id="FootRowDefaultIc001"></span><span data-page-node-id="FootRowDefaultNm001">One Harness</span>
       </div>
       <div class="side-foot-row" id="btn-open-settings" data-page-node-id="YLHNPLVapW7vZbqnlsgnEZ">
@@ -79,6 +79,13 @@
     <div class="transcript" id="transcript" data-page-node-id="WtzBBpVr1Dkso9h0lwwjYB"></div>
 
     <div class="composer" data-page-node-id="F6MEE5GyQhHV6uhC4nGM0y">
+      <!-- 输入框正上方的两个快捷按钮（并排横放、左对齐输入框）：只在 One Harness 专用会话里出现，
+           显隐由 renderChatTools() 按"当前会话是不是它"算。 -->
+      <div class="chat-tools hidden" id="chat-tools" data-page-node-id="ChatTools00001">
+        <button class="chat-tool" id="ct-config-model" data-page-node-id="ChatToolCfg00001">配置自定义模型</button>
+        <button class="chat-tool" id="ct-draw" data-page-node-id="ChatToolDraw0001">绘图</button>
+      </div>
+
       <div class="composer-box" data-page-node-id="sZLHC8S9zPMNtEDhlMJ1bI">
         <div class="composer-atts hidden" id="composer-atts"></div>
         <textarea id="input" rows="2" placeholder="让 One Harness 帮你完成任务" title="Enter 发送，Shift+Enter 换行"></textarea>

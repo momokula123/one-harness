@@ -21,7 +21,14 @@ function logFile(projectId) {
 }
 
 function readLog(projectId) {
-  const file = logFile(projectId);
+  // **纯读，不许建目录**：logFile() 会 ensureDir，而"列改动记录"在启动时就会被调一次
+  // （renderer 的 refreshFiles），工程目录不可写（比如绿色版被拷到别的电脑、老记录里
+  // 还写着上一台机器的绝对路径）时，mkdir 抛 EPERM 会顺着 IPC 冒到 init()，
+  // 整个界面变成一页"启动失败"。读不到就当空列表。
+  // ⚠️ 路径必须和 logFile() **逐段一致**（`<工程记录目录>/checkpoints/log.jsonl`）——
+  // 这里少写一层 `checkpoints` 的话读到的就是"永远不存在的文件"，表现是
+  // 改动记录恒为空、回滚永远"恢复 0 个"（features 的 D8/D10/E3~E5 就是拿这个当断言）。
+  const file = path.join(store.projectDataDir(projectId), 'checkpoints', 'log.jsonl');
   if (!fs.existsSync(file)) return [];
   return fs
     .readFileSync(file, 'utf8')

@@ -62,7 +62,6 @@ const MODULES = {
     tools: ['read_file_lines', 'write_file', 'replace_file_lines', 'search_file_line', 'list_directory', 'create_folder'],
   },
   shell: { id: 'shell', label: '终端命令', tools: ['shell_command'] },
-  python: { id: 'python', label: 'Python 执行', tools: ['run_python'] },
   web: { id: 'web', label: '联网抓取/搜索', tools: ['web_fetch', 'web_search'] },
   skills: { id: 'skills', label: '技能库', tools: ['list_skills', 'read_skill'] },
   office: { id: 'office', label: 'Office 文档', tools: ['validate_document', 'render_document'] },
@@ -74,12 +73,12 @@ const MODULES = {
 
 // 模块清单一处写：omni 与「默认模型」专用会话要的是同一套能力，别抄成两份
 // （抄两份的下场是"给 omni 加了个模块，专用会话悄悄少一个"）。
-const OMNI_MODULES = ['fs', 'shell', 'python', 'web', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'];
+const OMNI_MODULES = ['fs', 'shell', 'web', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'];
 
 const PROGRAMS = [
-  { id: 'omni', label: 'Omni', description: '通用全能：文件、终端、Python、联网、技能、Office 文档、图片生成、检查点、压缩', prompt: 'omni', modules: OMNI_MODULES.slice() },
-  { id: 'coder', label: 'Coder', description: '编码导向：文件、终端、Python、技能、Office 文档、图片生成、检查点、压缩', prompt: 'coder', modules: ['fs', 'shell', 'python', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'] },
-  { id: 'coder-safe', label: 'Coder（每次都问）', description: '编码导向，但所有写/执行操作都要人工确认', prompt: 'coder', modules: ['fs', 'shell', 'python', 'skills', 'office', 'image', 'checkpoints', 'compaction'], approvalOverride: 'always-ask' },
+  { id: 'omni', label: 'Omni', description: '通用全能：文件、终端、联网、技能、Office 文档、图片生成、检查点、压缩', prompt: 'omni', modules: OMNI_MODULES.slice() },
+  { id: 'coder', label: 'Coder', description: '编码导向：文件、终端、技能、Office 文档、图片生成、检查点、压缩', prompt: 'coder', modules: ['fs', 'shell', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'] },
+  { id: 'coder-safe', label: 'Coder（每次都问）', description: '编码导向，但所有写/执行操作都要人工确认', prompt: 'coder', modules: ['fs', 'shell', 'skills', 'office', 'image', 'checkpoints', 'compaction'], approvalOverride: 'always-ask' },
   { id: 'researcher', label: 'Researcher', description: '研究导向：联网抓取/搜索、文件读写、技能、Office 文档、图片生成', prompt: 'researcher', modules: ['fs', 'web', 'skills', 'office', 'image', 'compaction'] },
   { id: 'chat', label: 'Chat', description: '纯聊天：只带联网抓取，不动文件', prompt: 'chat', modules: ['web', 'compaction'] },
   { id: 'blank', label: 'Blank', description: '空白会话：不带任何工具', prompt: 'chat', modules: [] },
@@ -88,7 +87,10 @@ const PROGRAMS = [
   // `modelSource` 是它唯一的凭据：会话建出来时把它记进 session.modelSource，
   // 之后 agent 每轮按它把端点整组换成兜底那份（core/agent.js modelConfig）。
   // 普通会话拿不到这个值 —— sessions:update 的白名单里没有它，所以切不过去。
-  { id: 'default-llm', label: 'One Harness', description: '专用会话：固定走程序自带的那份模型（随包 config/ 那份），不受「常规」里配置的端点影响；普通会话用不了这个模型', prompt: 'omni', modules: OMNI_MODULES.slice(), modelSource: 'fallback' },
+  // ★ 这枚 label 不许也叫 "One Harness"：它在界面上是**程序预设**那枚胶囊，
+  //   而专用会话自己还有一枚标记胶囊（renderer 的 DEFAULT_SESSION_LABEL）。
+  //   两个都叫 One Harness 的话，同一行会并排出现两枚一模一样的 —— 用户看到的就是"重复"。
+  { id: 'default-llm', label: '默认模型', description: '专用会话：固定走程序自带的那份模型（随包 config/ 那份），不受「常规」里配置的端点影响；普通会话用不了这个模型', prompt: 'omni', modules: OMNI_MODULES.slice(), modelSource: 'fallback' },
 ];
 
 function listPrograms() {

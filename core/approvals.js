@@ -257,7 +257,6 @@ async function gate(settings, { tool, args, session, signal, approveAlwaysFor })
 
 function classifyTargetText(tool, args) {
   if (tool.alias === 'shell_command') return String(args.command || '');
-  if (tool.alias === 'run_python') return '[python] ' + String(args.code || '').slice(0, 4000);
   return tool.alias + ' ' + JSON.stringify(args || {}).slice(0, 2000);
 }
 

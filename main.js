@@ -590,6 +590,28 @@ function reasonOf(e) {
  * 绝不能一律写进 model：那等于把兜底那套的模型名"钉"成用户自己填的，
  * 之后用户改兜底卡片就再也不生效了（而他还以为自己在用兜底）。
  */
+/**
+ * 出厂端点自己声明了"只让选哪些模型"时（随包 config/*.json 的 `models` 数组），按它筛一遍。
+ * 为什么要筛：端点把**所有**模型都列出来（实测 12 个），里面既有早就没人提的旧型号，
+ * 也有后来上的收费型号 —— 用户要的是"只用我提到过的那几个"。
+ * ⚠️ 这一步还兼着另一件更要紧的活：不过滤的话下面 models[0] 就是端点列表里的第一个
+ *    （实测是 agnes-2.5-pro-alpha，又旧又是收费的），出厂模型名万一不在列表里，
+ *    就会被那行"自动换一个"悄悄改成它。筛过之后 models[0] 才是我们要的那个。
+ */
+function filterFactoryModels(list) {
+  const allow = store.factoryAllowlist('model');   // 对话模型的名单：只认 config/model.json 那份，别把生图模型混进来
+  if (!allow.length) return list;               // 没声明名单 = 不限制
+  const kept = list.filter((m) => allow.includes(m));
+  return kept.length ? kept : list;             // 一个都没匹配上（配置和端点对不上）→ 宁可不过滤也别给空列表
+}
+
+/** 两个端点地址是不是同一个（只用于"这就是出厂端点吗"的判定，不比路径细节）。 */
+function sameBaseUrl(a, b) {
+  const norm = (u) => String(u || '').trim().toLowerCase()
+    .replace(/\/+$/, '').replace(/\/chat\/completions$/, '').replace(/\/+$/, '');
+  return !!norm(a) && norm(a) === norm(b);
+}
+
 async function resolveModel() {
   const s = store.getSettings();
   const cfg = { ...s.model };
@@ -600,6 +622,8 @@ async function resolveModel() {
   } catch (e) {
     return { ok: false, error: reasonOf(e) + ' @ ' + (cfg.baseUrl || '') + '/models', models: [], model: cfg.model || '' };
   }
+  // 用户配了自己的端点 → 一律不筛（他的端点有什么就给什么）；没配 → 走的是出厂端点，按名单筛。
+  if (!ownInUse) models = filterFactoryModels(models);
   if (!models.length) return { ok: true, models: [], model: cfg.model || '' };
   if (cfg.model && models.includes(cfg.model)) return { ok: true, models, model: cfg.model };
   const picked = models[0];
@@ -661,7 +685,11 @@ function registerIpc() {
     if (override) {
       const cfg = { ...store.getSettings().model, ...override };
       try {
-        return { ok: true, models: await model.listModels(cfg), model: cfg.model || '' };
+        let models = await model.listModels(cfg);
+        // 用户在里面填的地址如果**就是出厂这个端点**（例如他直接照抄了随包 config 里的地址），
+        // 一样按名单筛；换成他自己的地址就全给 —— 名单是出厂端点的属性，不是全局规则。
+        if (sameBaseUrl(cfg.baseUrl, store.readFactory('model').baseUrl)) models = filterFactoryModels(models);
+        return { ok: true, models, model: cfg.model || '' };
       } catch (e) {
         return { ok: false, error: reasonOf(e) + ' @ ' + (cfg.baseUrl || '') + '/models', models: [], model: '' };
       }
@@ -953,6 +981,10 @@ function registerIpc() {
       return { ok: false, error: msg };
     }
   });
+  // 对话里的缩略图是**给人看的**，上限比"喂给模型"那条（core/images.js 的 10MB）宽：
+  // 生图 4K 实测就有 5248×2944 / 11.4MB 的 PNG —— 卡在 10MB 上，用户生成完图在对话里
+  // 看到的只会是「图片打不开」。模型输入那条**没有**放开，仍按 10MB 判。
+  const PREVIEW_MAX_BYTES = 32 * 1024 * 1024;
   // 渲染层要一张图的像素（气泡缩略图）。transcript 里只带相对路径，像素按需来取。
   // 只认工作目录内的路径 —— 和 core/tools/fs.js 的 resolveIn 同一条规矩：
   // 凡是"用户给的路径"，都必须在会话工作目录里，否则一律拒绝。
@@ -964,7 +996,7 @@ function registerIpc() {
       const abs = path.resolve(root, String(rel || ''));
       const out = path.relative(root, abs);
       if (out === '' || out.startsWith('..') || path.isAbsolute(out)) return { ok: false, error: '路径越界' };
-      const r = images.inspect(abs);
+      const r = images.inspect(abs, { maxBytes: PREVIEW_MAX_BYTES });
       if (!r.ok) return { ok: false, error: r.error };
       return { ok: true, dataUrl: r.dataUrl, abs, width: r.width, height: r.height, mime: r.mime, bytes: r.bytes };
     } catch (e) {
