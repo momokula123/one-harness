@@ -55,6 +55,27 @@ try {
     '<body><h1>内置浏览器加载成功</h1><p>hello from local file</p></body></html>');
 } catch (e) { console.log('[run-ui] 写探针页失败：' + e.message); }
 
+// ★ 本机假模型端点：**模型不是被测对象**（外部服务，公网往返一次几十秒、还花额度）。
+//   把测试端点指到它，D / F / F2 这些「真走一遍 模型→工具→再模型」的段才能从 100 秒降到 1~2 秒。
+//   详见 test/stub-model.js 顶部。想跑通真模型（发版前偶尔验一次）就设 HATCH_UI_NO_STUB=1。
+const STUB_PORT = Number(process.env.HATCH_STUB_PORT || 18787);
+const STUB_URL = 'http://127.0.0.1:' + STUB_PORT + '/v1';
+let stubServer = null;
+if (!process.env.HATCH_UI_NO_STUB) {
+  stubServer = require('./stub-model').start(STUB_PORT);
+  // 数据目录里已经有 settings.json 时不动它：HATCH_UI_KEEP_DATA=1 的探针要的正是"盘上原有的数据"。
+  const settingsFile = path.join(DATA_DIR, 'settings.json');
+  if (!fs.existsSync(settingsFile)) {
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+    fs.writeFileSync(settingsFile, JSON.stringify({
+      model: { baseUrl: STUB_URL, apiKey: 'stub-key', model: 'stub-model' },
+    }, null, 2));
+    console.log('[run-ui] 测试端点已指到本机桩：' + STUB_URL);
+  } else {
+    console.log('[run-ui] 数据目录里已有 settings.json → 原样保留（没指向本机桩）');
+  }
+}
+
 const env = {
   ...process.env,
   HATCH_DEBUG: '1',
@@ -79,8 +100,32 @@ const child = spawn(ELECTRON, ['.'], {
 
 let out = '';
 let err = '';
-child.stdout.on('data', (d) => { out += d.toString(); });
-child.stderr.on('data', (d) => { err += d.toString(); });
+let lastLine = '';
+const startedAt = Date.now();
+
+// ★ 实时回显（别改回"只攒着"）：跑得久的套件（features 要上真模型，一趟几分钟、
+//   固定等待就有 50 多秒）如果是全程零输出，在终端里跟卡死**没有任何区别**，
+//   人只会以为它挂了。带 [prog]/[eval]/[unhandled]/[win]/[browser] 的行立即回显，
+//   其余仍然攒着给 report() 用（失败时要看完整现场）。
+const LIVE = /\[prog\]|\[eval\]|\[unhandled\]|\[win\]|\[browser\]/;
+function feed(chunk, isErr) {
+  const s = chunk.toString();
+  if (isErr) err += s; else out += s;
+  for (const line of s.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    lastLine = t;
+    if (LIVE.test(t)) console.log((isErr ? '  ! ' : '  · ') + t);
+  }
+}
+child.stdout.on('data', (d) => feed(d, false));
+child.stderr.on('data', (d) => feed(d, true));
+
+// 心跳：每 10 秒一行。哪怕脚本一行进度都没打，也能看出进程还活着、已经跑到第几秒。
+const beat = setInterval(() => {
+  const sec = Math.round((Date.now() - startedAt) / 1000);
+  console.log('[run-ui] 已跑 ' + sec + 's · 最近输出：' + (lastLine.slice(0, 140) || '(暂无)'));
+}, 10000);
 
 function killTree(pid) {
   return new Promise((resolve) => {
@@ -137,5 +182,6 @@ const timer = setTimeout(async () => {
 child.on('exit', async (code) => {
   clearTimeout(timer);
   await killTree(child.pid);
+  if (stubServer) { try { stubServer.close(); } catch {} }   // 关掉桩，别占着端口
   report(code);
 });

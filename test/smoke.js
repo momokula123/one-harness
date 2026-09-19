@@ -6,6 +6,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 const TMP = path.join(ROOT, 'test', '.tmp');
@@ -14,6 +15,8 @@ process.env.HATCH_DATA_DIR = path.join(TMP, 'data');
 const store = require('../core/store');
 const sessionLib = require('../core/session');
 const checkpoints = require('../core/checkpoints');
+const compact = require('../core/compact');
+const model = require('../core/model');
 const { Agent } = require('../core/agent');
 const approvals = require('../core/approvals');
 const tools = require('../core/tools');
@@ -32,6 +35,54 @@ function check(name, cond, extra) {
   }
 }
 
+// ---------- 一张真的 4×4 PNG（生图工具的假产物）----------
+// 不用别人的图片文件当夹具：这里现封一张，宽高正好用来断言"尺寸是从字节里读出来的"。
+let crcTable = null;
+function crc32(buf) {
+  if (!crcTable) {
+    crcTable = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c;
+    }
+  }
+  let c = -1;
+  for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
+}
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+}
+function tinyPng(w, h) {
+  const raw = Buffer.alloc((w * 4 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * (w * 4 + 1);
+    raw[row] = 0;
+    for (let x = 0; x < w; x++) {
+      const o = row + 1 + x * 4;
+      raw[o] = 220; raw[o + 1] = 90; raw[o + 2] = 70; raw[o + 3] = 255;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+const TINY_PNG = tinyPng(4, 4);
+
 // ---------- 假模型服务 ----------
 let call = 0;
 function startMock() {
@@ -39,6 +90,40 @@ function startMock() {
     if (req.url.startsWith('/v1/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ data: [{ id: 'mock-model' }] }));
+      return;
+    }
+    // 生图产物那张图（生图接口只回 URL，工具自己来下载）
+    if (req.url.startsWith('/img/tiny.png')) {
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      res.end(TINY_PNG);
+      return;
+    }
+    // 假生图接口：把收到的请求体原样留下来给断言看
+    if (req.url.startsWith('/v1/images/generations')) {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        const payload = JSON.parse(body || '{}');
+        global.__imageCalls = (global.__imageCalls || 0) + 1;
+        global.__lastImageReq = payload;
+        global.__lastImageAuth = req.headers.authorization || '';
+        const prompt = String(payload.prompt || '');
+        if (prompt.includes('FAIL401')) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'invalid api key' } }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (prompt.includes('USE_B64')) {
+          // 另一种返回形状：不给 URL，直接给 base64
+          res.end(JSON.stringify({ created: 1, data: [{ url: null, b64_json: TINY_PNG.toString('base64'), revised_prompt: null }] }));
+          return;
+        }
+        res.end(JSON.stringify({
+          created: 1,
+          data: [{ url: 'http://' + req.headers.host + '/img/tiny.png', b64_json: null, revised_prompt: '改写后的提示词' }],
+        }));
+      });
       return;
     }
     if (req.url.startsWith('/v1/chat/completions')) {
@@ -52,9 +137,21 @@ function startMock() {
         const toolNames = (payload.tools || []).map((t) => t.function.name);
         const joined = JSON.stringify(msgs);
         call++;
+        // 把请求体原样留给断言看：**"参数到底有没有发出去"只能从这儿证** ——
+        // 内核里算出来一个字段，和它真的出现在 HTTP body 里，是两件事。
+        global.__lastChatReq = payload;
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         const send = (o) => res.write('data: ' + JSON.stringify(o) + '\n\n');
         const chunk = (delta, finish) => ({ choices: [{ index: 0, delta, finish_reason: finish || null }] });
+
+        // ---- 压缩摘要：直接回一段文本，好让"该压 / 不该压"两侧都能走到头 ----
+        if (sys.startsWith('You compress agent transcripts')) {
+          send(chunk({ content: '（压缩后的摘要）用户的目标、已改的文件、下一步。' }));
+          send(chunk({}, 'stop'));
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
 
         // ---- 评审子会话：走另一套脚本 ----
         if (sys.startsWith('You are the command reviewer')) {
@@ -124,6 +221,168 @@ async function main() {
     approval: { mode: 'auto' },
   });
 
+  console.log('\n1b) 兜底端点：与"用户自己的模型"分两套存');
+  {
+    const MOCK = 'http://127.0.0.1:' + port + '/v1';
+    const g = store.getSettings();
+    check('语言模型兜底来自随包 config/model.json',
+      g.fallback.llm.model === store.readFactory('model').model && !!g.fallback.llm.baseUrl,
+      JSON.stringify(g.fallback.llm));
+    check('生图兜底来自随包 config/image.json',
+      g.fallback.image.model === store.readFactory('image').model && /agnes/.test(g.fallback.image.baseUrl),
+      JSON.stringify(g.fallback.image));
+    check('对照：两个文件是两份东西（不是同一个兜底被读了两遍）',
+      store.factoryFiles('model')[0] !== store.factoryFiles('image')[0]);
+    check('用户自己配了端点 → 正在用的就是他那一套',
+      g.model.baseUrl === MOCK && g.model.model === 'mock-model', JSON.stringify({ b: g.model.baseUrl, m: g.model.model }));
+    check('★ 不去借兜底的 key（A 家的钥匙发到 B 家地址上，是不报错的那种错）',
+      g.model.apiKey === '', JSON.stringify(g.model.apiKey));
+    check('modelOwn 记的是用户填的原文（界面输入框绑它，而不是绑"生效值"）',
+      g.modelOwn.baseUrl === MOCK && g.modelOwn.model === 'mock-model');
+    check('派生字段不落盘（settings.json 里没有 modelOwn）',
+      !fs.readFileSync(store.SETTINGS_FILE, 'utf8').includes('modelOwn'));
+
+    // 清空用户那组 → 整套切兜底
+    store.saveSettings({ model: { baseUrl: '', model: '' } });
+    const g2 = store.getSettings();
+    check('用户两项清空 → 整套回落到兜底',
+      g2.model.baseUrl === g2.fallback.llm.baseUrl && g2.model.model === g2.fallback.llm.model);
+    check('对照：这时 modelOwn 仍是空串（界面才知道"你没填"）', g2.modelOwn.baseUrl === '');
+    // 上下文大小跟着"当前生效的那套"走：agnes-3.0-flash 是 512K，写在 config/model.json 里
+    check('兜底那份自带上下文大小（512K，来自 config/model.json）',
+      g2.fallback.llm.contextLength === 524288, String(g2.fallback.llm.contextLength));
+    check('走兜底时，生效的上下文大小 = 兜底那套的（不是内置的 16384，否则 512K 的模型会被过早压缩）',
+      g2.model.contextLength === 524288, String(g2.model.contextLength));
+
+    // 卡片里改兜底，会立刻反映到"正在用的"上
+    store.saveSettings({ fallback: { llm: { model: 'probe-fallback-model' } } });
+    check('兜底卡片改了 → 正在用的那套跟着变', store.getSettings().model.model === 'probe-fallback-model');
+
+    // ★ 两套真的分开：把用户那组写回去，兜底的改动就不再影响正在用的
+    store.saveSettings({ model: { baseUrl: MOCK, model: 'mock-model' } });
+    check('★ 用户填回自己的端点 → 兜底那份改动不再影响正在用的（真的分开了）',
+      store.getSettings().model.model === 'mock-model');
+    check('★ 反向：用户这组的值也没有渗进兜底卡片', store.getSettings().fallback.llm.model === 'probe-fallback-model');
+    // ★ 反过来也不能拿兜底的 512K 去套别人的端点（撑爆是"上下文溢出"，比早压缩难查）
+    check('★ 换回自己的端点后，上下文大小回到保守默认（不是兜底那 512K）',
+      store.getSettings().model.contextLength === 16384, String(store.getSettings().model.contextLength));
+    store.saveSettings({ fallback: { llm: { model: '' } } });   // 还原，别影响后面的用例
+    check('还原：兜底模型又回到出厂值', store.getSettings().fallback.llm.model === store.readFactory('model').model);
+  }
+
+  console.log('\n1c) 思考强度（reasoning_effort）：只跟着兜底那份走');
+  {
+    const MOCK = 'http://127.0.0.1:' + port + '/v1';
+    // 兜底那份**临时指到假端点**：它默认是 agnes 的公网地址，冒烟里不能真联网、更不能花人钱。
+    // 模型名与钥匙都跟用户那组不一样 —— 这样"请求到底走的哪一套"能从请求体里看出来。
+    const FB = { baseUrl: MOCK, apiKey: 'test-key-not-real', model: 'mock-fallback-model' };
+    const facModel = store.readFactory('model');
+    check('出厂思考强度取自随包 config/model.json', facModel.reasoning === 'none', JSON.stringify(facModel.reasoning));
+    check('取值表由内核给出（界面照它画下拉，不自己抄一份字面值）',
+      JSON.stringify(store.REASONING_LEVELS) === JSON.stringify(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
+      JSON.stringify(store.REASONING_LEVELS));
+
+    // 用户配着自己的端点（1b 段留下的 MOCK），这里只动兜底卡片
+    store.saveSettings({ fallback: { llm: { ...FB, reasoning: 'high' } } });
+    const g1 = store.getSettings();
+    check('卡片里填的思考强度落到兜底那份上', g1.fallback.llm.reasoning === 'high');
+    check('★ 用户自己那套**不带**思考强度（在哪儿调都一样，动不到他正在用的模型）',
+      g1.model.reasoning === '', JSON.stringify(g1.model.reasoning));
+
+    // 真正决定行为的一步：这个字段到底有没有进 HTTP body
+    const ag = new Agent({ getSettings: () => store.getSettings(), emit: () => {}, askUser: async () => ({ approved: true, note: '' }) });
+    const ownSess = sessionLib.createSession({ projectId: 'p-reason', name: 'x', programId: 'chat' });
+    const pinSess = sessionLib.createSession({ projectId: 'p-reason', name: 'y', programId: 'default-llm' });
+    await model.streamChat(ag.modelConfig(ownSess), { messages: [{ role: 'user', content: 'hi' }], onEvent: () => {} });
+    check('★ 走自己的端点：请求体里**没有** reasoning_effort',
+      !('reasoning_effort' in (global.__lastChatReq || {})),
+      'reasoning_effort=' + JSON.stringify((global.__lastChatReq || {}).reasoning_effort));
+    check('对照：这一发确实是打给用户那套的（模型名对得上）',
+      (global.__lastChatReq || {}).model === 'mock-model', JSON.stringify((global.__lastChatReq || {}).model));
+    await model.streamChat(ag.modelConfig(pinSess), { messages: [{ role: 'user', content: 'hi' }], onEvent: () => {} });
+    check('同一个设置下，专用会话的请求体里带上了 reasoning_effort=high',
+      (global.__lastChatReq || {}).reasoning_effort === 'high',
+      JSON.stringify((global.__lastChatReq || {}).reasoning_effort));
+    check('对照：这一发打的是兜底那份（模型名不是用户那个）',
+      (global.__lastChatReq || {}).model === FB.model, JSON.stringify((global.__lastChatReq || {}).model));
+
+    // 上游只认那几个字面值（实测：乱填/大写一律 400）→ 这里必须拦住，别把一个必然失败的请求发出去
+    store.saveSettings({ fallback: { llm: { reasoning: 'ULTRA' } } });
+    check('乱填的思考强度被当成"没设"（不外发，回落出厂值）',
+      store.getSettings().fallback.llm.reasoning === facModel.reasoning,
+      JSON.stringify(store.getSettings().fallback.llm.reasoning));
+    store.saveSettings({ fallback: { llm: { reasoning: facModel.reasoning } } });
+    check('填的值 == 出厂值 → 存空串（改 config/model.json 还能跟着走）',
+      JSON.parse(fs.readFileSync(store.SETTINGS_FILE, 'utf8')).fallback.llm.reasoning === '',
+      JSON.stringify(JSON.parse(fs.readFileSync(store.SETTINGS_FILE, 'utf8')).fallback.llm.reasoning));
+    // 还原：兜底那组回出厂（别让假端点留在后面的用例里）
+    store.saveSettings({ fallback: { llm: { baseUrl: '', apiKey: '', model: '', reasoning: '' } } });
+    check('还原：兜底端点回到随包 config/model.json 那份',
+      store.getSettings().fallback.llm.baseUrl === facModel.baseUrl);
+  }
+
+  console.log('\n1d) 「默认模型」专用会话：端点整组走兜底，普通会话切不过来');
+  {
+    const MOCK = 'http://127.0.0.1:' + port + '/v1';
+    // 兜底那份临时指到假端点（默认是 agnes 公网地址，冒烟里不能真联网）。
+    // 模型名/钥匙/上下文都跟用户那组不同 —— 一眼就能看出请求走的是哪一套。
+    const FB = { baseUrl: MOCK, apiKey: 'test-key-not-real', model: 'mock-fallback-model' };
+    store.saveSettings({ fallback: { llm: FB } });
+    const facModel = store.readFactory('model');
+    const agentLib = require('../core/agent');
+    const progs = require('../core/prompts').listPrograms();
+    const pinned = progs.find((p) => p.id === 'default-llm');
+    check('程序预设里有「默认模型」，且带着 modelSource=fallback',
+      !!pinned && pinned.modelSource === 'fallback');
+    check('它和 Omni 的能力一样（两处共用同一份模块清单，只有端点来源不同）',
+      JSON.stringify(pinned.modules) === JSON.stringify(progs.find((p) => p.id === 'omni').modules));
+
+    const ag = new Agent({ getSettings: () => store.getSettings(), emit: () => {}, askUser: async () => ({ approved: true, note: '' }) });
+    const pin = sessionLib.createSession({ projectId: 'p-x', name: '默认模型', programId: 'default-llm' });
+    const ownSess = sessionLib.createSession({ projectId: 'p-x', name: '普通', programId: 'omni' });
+    check('按这个预设建出来的会话带 modelSource=fallback', pin.modelSource === 'fallback');
+    check('普通预设建出来的是 null（跟随设置）', ownSess.modelSource === null);
+    check('★ 传参塞不进来（唯一来源是程序预设 → 普通会话切不过去）',
+      sessionLib.createSession({ projectId: 'p-x', programId: 'omni', modelSource: 'fallback' }).modelSource === null);
+
+    const c1 = ag.modelConfig(pin);
+    check('★ 专用会话的端点整组是兜底那份（模型名换成兜底那个）',
+      c1.baseUrl === FB.baseUrl && c1.model === FB.model, JSON.stringify({ b: c1.baseUrl, m: c1.model }));
+    check('★ 连钥匙也是兜底那份（不能拿用户家的钥匙去开兜底家的门）', c1.apiKey === FB.apiKey);
+    const c2 = ag.modelConfig(ownSess);
+    check('对照：同一时刻普通会话打的确实是用户配的那套',
+      c2.baseUrl === MOCK && c2.model === 'mock-model' && c2.apiKey === '',
+      JSON.stringify({ b: c2.baseUrl, m: c2.model, k: c2.apiKey }));
+    check('sessionMeta 会说清这个会话走的是兜底（界面才显示得出出处）',
+      agentLib.sessionMeta(pin).modelSource === 'fallback' && agentLib.sessionMeta(ownSess).modelSource === null);
+
+    // 容量：兜底那份自带 512K，压缩阈值必须按**这个会话实际在用的端点**算。
+    // 拿全局那套的 16384 去卡专用会话，等于还有 50 万 token 空间就白砍一次上下文。
+    const pinCtx = store.endpointFor(store.getSettings(), 'fallback').contextLength;
+    check('专用会话的容量是兜底那份自带的 512K（卡片留空 → 取配置文件的）',
+      pinCtx === facModel.contextLength && pinCtx === 524288, String(pinCtx));
+    const big = 'x'.repeat(90000);          // ≈2.25 万 token：越过 16384 的线，离 512K 还很远
+    const entries = [];
+    for (let i = 0; i < 8; i++) {
+      entries.push({ id: 'e' + i, ts: Date.now() + i, type: 'message', role: 'user', parts: [{ type: 'text', text: big }] });
+    }
+    const mk = (modelSource) => ({ ...pin, id: 'smoke-compact-' + (modelSource || 'own'), modelSource, entries: entries.map((e) => ({ ...e })), compaction: null });
+    const msgs = [{ role: 'user', content: big }];
+
+    const before = call;
+    const stay = await compact.maybeCompact(store.getSettings(), mk('fallback'), msgs, {});
+    check('★ 专用会话按兜底的 512K 算阈值 → 2.25 万 token 远没到线，一次摘要调用都不发',
+      stay.compacted === false && call === before, JSON.stringify({ r: stay, extraCalls: call - before }));
+    const ownBig = await compact.maybeCompact(store.getSettings(), mk(null), msgs, {});
+    check('反向对照：同一条消息在用户那套（16384）里就该压 —— 证明上一条不是"什么都没发生"',
+      ownBig.compacted === true && call === before + 1, JSON.stringify({ r: ownBig, extraCalls: call - before }));
+    // 摘要这次调用也得打对地方（不然会出现"对话打 A 家、摘要打 B 家"）
+    check('摘要请求走的是同一个会话的端点（不是拿用户那套去压专用会话）',
+      (global.__lastChatReq || {}).model === 'mock-model', JSON.stringify((global.__lastChatReq || {}).model));
+    store.saveSettings({ fallback: { llm: { baseUrl: '', apiKey: '', model: '' } } });   // 还原
+    check('还原：兜底端点回到随包那份', store.getSettings().fallback.llm.baseUrl === facModel.baseUrl);
+  }
+
   // 运行日志：冒烟里也真开一份（默认不 init 就是关的），这样"整轮对话该产出哪些日志行"
   // 有断言兜底 —— 免得哪天埋点被误删，又要等出事时才发现没记录。日志写到 TMP 下，不碰仓库 logs/。
   const RUNLOG_DIR = path.join(TMP, 'logs');
@@ -165,9 +424,13 @@ async function main() {
     askUser: async () => ({ approved: true, note: '测试自动批准' }),
   });
   sessionLib.userMessage(session, '在 notes 目录建一个 hello.txt');
+  // 计数用**增量**而不是绝对值：call 是假端点的全局计数，前面几段（思考强度、
+  // 专用会话、压缩阈值）各自也发过请求。写死"共 2 次"会把那些段一起算进来 ——
+  // 那样一加用例就红，且红得与这里无关。
+  const callsBeforeTurn = call;
   const r = await agent.runTurn(session);
   check('runTurn 成功', r.ok === true, JSON.stringify(r));
-  check('共调用模型 2 次', call === 2, '实际 ' + call);
+  check('共调用模型 2 次', call - callsBeforeTurn === 2, '实际 ' + (call - callsBeforeTurn));
   check('模型看到的工具里有 write_file', (global.__lastToolNames || []).includes('write_file'));
   check('第二轮消息里带上了 tool 结果', (global.__lastMessages || []).some((m) => m.role === 'tool'));
   check('文件已创建', fs.existsSync(path.join(project.cwd, 'notes', 'hello.txt')));
@@ -257,6 +520,92 @@ async function main() {
       && offText.split('\n').filter(Boolean).length === beforeOff,
     'init=' + offInit + ' 行数 ' + beforeOff + ' → ' + offText.split('\n').filter(Boolean).length);
   delete process.env.HATCH_RUN_LOG;
+
+  // ---------- 4d) 生图工具（打假生图端点：不联网、不花钱）----------
+  console.log('\n4d) 生图工具 generate_image');
+  {
+    const P = require('../core/prompts');
+    const MOCK = 'http://127.0.0.1:' + port + '/v1';
+    const imgTool = tools.resolveTool('generate_image');
+    check('生图工具注册在 image 模块下', !!imgTool && imgTool.module === 'image');
+    check('工具目录里能看到它（界面「工具」页读的就是这份）',
+      tools.catalog().some((t) => t.alias === 'generate_image'));
+    check('omni / coder 两个预设都挂上了 image 模块',
+      P.getProgram('omni').modules.includes('image') && P.getProgram('coder').modules.includes('image'));
+    check('★ schema 能生成给模型（不然模型根本不知道有这个工具）',
+      tools.schemasFor(P.toolAliasesFor({ modules: ['image'] }, ['image'])).some((s) => s.function.name === 'generate_image'));
+
+    store.saveSettings({ fallback: { image: { baseUrl: MOCK, apiKey: 'test-key-not-real', model: 'mock-image-model' } } });
+    const mkCtx = () => ({ workingDir: project.cwd, settings: store.getSettings(), log: () => {} });
+    global.__imageCalls = 0;
+
+    const r1 = await tools.execute('generate_image', JSON.stringify({ prompt: '窗台上的一只猫', size: '2K', ratio: '16:9', save_as: 'cat' }), mkCtx());
+    check('生图跑通', r1.isError !== true, r1.text);
+    const req1 = global.__lastImageReq || {};
+    check('假端点确实收到了 1 次请求', global.__imageCalls === 1, String(global.__imageCalls));
+    check('带上了 Authorization', /^Bearer test-key-not-real$/.test(global.__lastImageAuth || ''), String(global.__lastImageAuth));
+    check('请求形状照文档：response_format 在 extra_body 里，不在顶层',
+      !('response_format' in req1) && !!req1.extra_body && req1.extra_body.response_format === 'url',
+      JSON.stringify(req1));
+    check('size / ratio / model 原样传下去',
+      req1.size === '2K' && req1.ratio === '16:9' && req1.model === 'mock-image-model', JSON.stringify(req1));
+    const catFile = path.join(project.cwd, 'cat.png');
+    check('图真的落进工作目录', fs.existsSync(catFile), catFile);
+    check('尺寸是从字节里读出来的（4×4 就是那张假 PNG 的真实尺寸）', /4×4/.test(r1.text), r1.text.split('\n')[0]);
+    check('结果里给了相对路径', /cat\.png/.test(r1.text));
+    check('revised_prompt 有就带出来', /改写后的提示词/.test(r1.text));
+    check('★ 明确告诉模型它看不到这张图（别让它假装看过）', /看不到/.test(r1.text));
+    check('★ 带上了 images（界面靠它把图贴出来）',
+      Array.isArray(r1.images) && r1.images[0].rel === 'cat.png' && r1.images[0].mime === 'image/png',
+      JSON.stringify(r1.images));
+
+    const r2 = await tools.execute('generate_image', JSON.stringify({ prompt: 'USE_B64 再来一张', save_as: 'cat' }), mkCtx());
+    check('b64_json 那种返回形状也认（不是只认 url）',
+      r2.isError !== true && fs.existsSync(path.join(project.cwd, 'cat-1.png')), r2.text);
+    check('同名不覆盖（第二次写成 cat-1.png）', !!r2.images && r2.images[0].rel === 'cat-1.png', JSON.stringify(r2.images));
+
+    // 三处都要有，缺一处用户就看不见图：事件日志 → 转录 → 界面
+    sessionLib.toolMessage(session, { callId: 'img_1', name: 'generate_image', text: r1.text, isError: false, images: r1.images });
+    const trow = sessionLib.renderTranscript(session).filter((r) => r.kind === 'tool').pop();
+    check('转录里带上了图片（界面按 rel 走 files:preview 取像素）',
+      trow.images.length === 1 && trow.images[0].rel === 'cat.png', JSON.stringify(trow.images));
+    const toolMsgs = sessionLib.renderMessages(session).filter((m) => m.role === 'tool');
+    check('★ 工具产出的图不会漏进模型消息（OpenAI 只有 user 能带图，混进去就是 400）',
+      toolMsgs.every((m) => typeof m.content === 'string' && !m.content.includes('data:image')));
+
+    // 出错路径：每一条都要"当场说清楚、别白跑"
+    const r3 = await tools.execute('generate_image', JSON.stringify({ prompt: 'x', images: ['../outside.png'] }), mkCtx());
+    check('参考图越界被拦（工作目录外一律不许读）', r3.isError === true && /越界/.test(r3.text), r3.text);
+    const r4 = await tools.execute('generate_image', JSON.stringify({ prompt: 'x', size: '8K' }), mkCtx());
+    check('非法 size 当场回绝（不白跑一趟）', r4.isError === true && /size/.test(r4.text), r4.text);
+    const r5 = await tools.execute('generate_image', JSON.stringify({ prompt: 'FAIL401' }), mkCtx());
+    check('上游 401 给的是"去核对 key"这种能照做的提示',
+      r5.isError === true && /401/.test(r5.text) && /key/.test(r5.text), r5.text);
+
+    // 卡片里把 Key 清掉 = 回落到出厂那份（"留空 = 用出厂值"这条对 key 也成立）
+    store.saveSettings({ fallback: { image: { apiKey: '' } } });
+    check('卡片里清空 Key = 回落到出厂那份',
+      store.getSettings().fallback.image.apiKey === store.readFactory('image').apiKey);
+
+    // 真的"没有 key"这条分支：手搓一份 ctx（出厂那份现在带着 key，走 store 到不了这个状态）。
+    // 判据是**一条请求都不许发** —— 没有 key 打过去只会白等一轮再拿个 401。
+    const beforeMissing = global.__imageCalls;
+    const noKeyCtx = {
+      workingDir: project.cwd,
+      settings: { fallback: { image: { baseUrl: MOCK, apiKey: '', model: 'mock-image-model' } } },
+    };
+    const r6 = await tools.execute('generate_image', JSON.stringify({ prompt: 'x' }), noKeyCtx);
+    check('★ 没配 key 时不发请求，直接说明去哪填',
+      r6.isError === true && global.__imageCalls === beforeMissing && /设置/.test(r6.text), r6.text);
+    // 端点也没配（出厂文件被删/没打包进去时就是这个状态）
+    const noCfgCtx = { workingDir: project.cwd, settings: { fallback: { image: { baseUrl: '', apiKey: '', model: '' } } } };
+    const r7 = await tools.execute('generate_image', JSON.stringify({ prompt: 'x' }), noCfgCtx);
+    check('端点没配时也是"没发请求 + 说清楚去哪配"',
+      r7.isError === true && global.__imageCalls === beforeMissing && /Base URL/.test(r7.text), r7.text);
+    store.saveSettings({ fallback: { image: { baseUrl: '', apiKey: '', model: '' } } });   // 还原
+    check('还原后生图兜底又回到出厂那份（config/image.json）',
+      store.getSettings().fallback.image.model === store.readFactory('image').model);
+  }
 
   console.log('\n5) 检查点与回滚');
   const log = checkpoints.readLog(project.id);

@@ -4,6 +4,7 @@
 const model = require('./model');
 const sessionLib = require('./session');
 const images = require('./images');
+const store = require('./store');
 
 const COMPACT_SYSTEM = `You compress agent transcripts so work can continue in a smaller context window.
 
@@ -48,7 +49,9 @@ function estimateMessagesTokens(messages) {
 }
 
 function shouldCompact(settings, session, messages) {
-  const limit = settings.model.contextLength || 16384;
+  // 容量按**这个会话实际在用的端点**算（store.endpointFor）—— 「默认模型」专用会话走兜底那份，
+  // 它自带 512K。拿全局那套的 16384 去卡它，等于每 1.5 万 token 就白砍一次上下文。
+  const limit = store.endpointFor(settings, session && session.modelSource).contextLength || 16384;
   const used = estimateMessagesTokens(messages);
   return used / limit >= (settings.agent.autoCompactRatio || 0.9375);
 }
@@ -91,10 +94,13 @@ async function maybeCompact(settings, session, messages, { signal } = {}) {
   if (cutIdx <= 0) return { compacted: false };
   const lastOld = messageEntries[cutIdx - 1];
   const text = transcriptToText(session, lastOld.ts);
+  // 摘要这次调用也走**这个会话实际在用的端点**，与主循环同一口径：
+  // 否则专用会话会出现"对话打 agnes、摘要拿用户那套打"的分叉（地址与钥匙错配）。
+  const ep = store.endpointFor(settings, session && session.modelSource);
   const cfg = {
-    baseUrl: settings.model.baseUrl,
-    apiKey: settings.model.apiKey,
-    model: settings.model.model,
+    baseUrl: ep.baseUrl,
+    apiKey: ep.apiKey,
+    model: ep.model,
     temperature: 0.2,
   };
   const prior = session.compaction && session.compaction.summary ? session.compaction.summary + '\n\n---\n\n' : '';

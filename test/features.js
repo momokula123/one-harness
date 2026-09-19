@@ -5,6 +5,10 @@
   const api = window.hatch;
   const $id = (i) => document.getElementById(i);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 进度打点都带"距开始多少秒"：一眼就能看出时间被哪一段吃掉了
+  // （实测 D 段走公网真模型时一段就 100s+，光看段名看不出来）。
+  const T0 = Date.now();
+  const prog = (label) => console.log('[prog] +' + ((Date.now() - T0) / 1000).toFixed(1) + 's ' + label);
   const V = {};
   const fails = [];
   const R = {};
@@ -12,7 +16,7 @@
     V[name] = !!cond;
     if (!cond) fails.push(name + (extra === undefined ? '' : ' :: ' + JSON.stringify(extra)));
   };
-  const until = async (fn, ms = 120000, step = 400) => {
+  const until = async (fn, ms = 15000, step = 200) => {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) {
       try { if (await fn()) return true; } catch {}
@@ -30,6 +34,7 @@
   });
 
   // ============ A. 新建项目对话框（用户报的那个 bug） ============
+  prog("A. 新建项目对话框（用户报的那个 bug）");
   $id('btn-new-project').click();
   await wait(500);
   check('A1 起名对话框会弹出', !$id('project-modal').classList.contains('hidden'));
@@ -39,6 +44,7 @@
   check('A3 取消后对话框关闭', $id('project-modal').classList.contains('hidden'));
 
   // ============ B. 布局与面板 ============
+  prog("B. 布局与面板");
   const uiBefore = await api.ui.state();
   const noRightBefore = $id('app-root').classList.contains('no-right');
   $id('btn-toggle-right').click();
@@ -75,6 +81,7 @@
   check('B5 技能面板列出了技能', skillItems >= 1, skillItems);
 
   // ============ C. 会话生命周期 ============
+  prog("C. 会话生命周期");
   const proj = (await api.projects.list())[0];
   await api.sessions.update({ projectId: proj.id, sessionId: null, patch: {} }).catch(() => null);
   const sessBefore = (await api.sessions.list(proj.id)).length;
@@ -94,6 +101,7 @@
   check('C4 会话详情能读回', !!cur);
 
   // ============ D. 真模型：一轮工具调用 ============
+  prog("D. 真模型：一轮工具调用");
   await api.sessions.update({ projectId: proj.id, sessionId: cur.id, patch: { approvalMode: 'auto' } });
   $id('input').value = '在工作目录下创建文件 notes/sweep.md，内容写一行 SWEEP_OK，然后读回来确认内容。';
   $id('btn-send').click();
@@ -103,7 +111,7 @@
     running: running(), sendDisabled: $id('btn-send').disabled,
   });
 
-  const done = await until(() => !running(), 180000);
+  const done = await until(() => !running(), 30000);
   check('D2 一轮能在 3 分钟内跑完', done);
   R.turnText = transcriptText().slice(0, 1200);
 
@@ -238,6 +246,7 @@
   check('D10 检查点已记录', cps.length >= 1, cps.length);
 
   // ============ E. 回滚（真点界面上的按钮，不走 IPC） ============
+  prog("E. 回滚（真点界面上的按钮，不走 IPC）");
   // 注意：会话条目用的是 {type:'message', role:'user'}，kind 只存在于渲染后的行对象里
   const loaded = await api.sessions.load({ projectId: proj.id, sessionId: cur.id });
   const entries = (loaded.session && loaded.session.entries) || [];
@@ -258,6 +267,7 @@
   }
 
   // ============ E4/E5. 改动记录面板：每个文件一行；「恢复」连点两次不能报错 ============
+  prog("E4/E5. 改动记录面板：每个文件一行；「恢复」连点两次不能报错");
   // 用户报的 bug：恢复之后再点一次「恢复」→ 右上角 "操作失败：Error invoking remote method
   // 'checkpoints:revertFile': The "path" argument must be of type string. Received null"。
   // 根因有两层：① 内核 revertFile 取"最后一条记录"，而恢复动作自己也写一条 kind:'restored'、
@@ -289,10 +299,11 @@
     { t1, t2, rejected: rejections.slice(rejBeforeE) });
 
   // ============ F. 审批拦截（always-ask） ============
+  prog("F. 审批拦截（always-ask）");
   await api.sessions.update({ projectId: proj.id, sessionId: cur.id, patch: { approvalMode: 'always-ask' } });
   $id('input').value = '用 shell 执行命令 echo HATCH_APPROVAL_TEST';
   $id('btn-send').click();
-  const asked = await until(() => !$id('approval-modal').classList.contains('hidden'), 120000);
+  const asked = await until(() => !$id('approval-modal').classList.contains('hidden'), 15000);
   check('F1 高风险命令弹出了审批卡', asked);
 
   if (asked) {
@@ -304,7 +315,7 @@
     $id('approval-note').value = '巡检：故意拒绝';
     $id('approval-deny').click();
     await wait(800);
-    const finished = await until(() => !running(), 120000);
+    const finished = await until(() => !running(), 20000);
     check('F4 拒绝后这一轮能正常收尾', finished);
     check('F5 会话里留下了拒绝记录', /拒绝|已拦截|deny/.test(transcriptText()));
   } else {
@@ -315,11 +326,12 @@
   }
 
   // ============ F2. 非低风险调用：必须走评审子会话并给出三轴 ============
+  prog("F2. 非低风险调用：必须走评审子会话并给出三轴");
   // 探针用写文件（write_file，中风险）：它一定不是 low，「每次询问」下必然先过评审。
   // （早先试过让模型跑危险 shell 命令，模型却先自己执行 Test-Path 探测，风险变成 low，探针失效）
   $id('input').value = '再在工作目录写一个文件 notes/from-approval.md，内容一行 APPROVAL_OK。';
   $id('btn-send').click();
-  const asked2 = await until(() => !$id('approval-modal').classList.contains('hidden'), 180000);
+  const asked2 = await until(() => !$id('approval-modal').classList.contains('hidden'), 15000);
   check('F6 中风险调用在「每次询问」下弹出审批卡', asked2);
   if (asked2) {
     R.cmd2 = $id('approval-cmd').textContent.slice(0, 200);
@@ -338,7 +350,7 @@
     // 一张卡都没有却还在跑，才是运行状态自己卡住了（真 bug）。
     let denies = 1;
     let settled = false;
-    const deadline = Date.now() + 150000;
+    const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
       if (running() === false) { settled = true; break; }
       const cardOpen = !$id('approval-modal').classList.contains('hidden');
@@ -365,6 +377,7 @@
   }
 
   // ============ G. 分叉（优先走界面上的按钮） ============
+  prog("G. 分叉（优先走界面上的按钮）");
   // 消息下方的动作是悬停图标：.msg-actions 里 data-ic=undo(回滚) / copy(复制) / branch(分叉)
   await api.sessions.update({ projectId: proj.id, sessionId: cur.id, patch: { approvalMode: 'reviewer' } });
   const actionBtn = (re) => [...document.querySelectorAll('#transcript .msg-actions button')].filter((b) => re.test(b.title || ''));
@@ -382,6 +395,7 @@
   }
 
   // ============ H. 删除会话 ============
+  prog("H. 删除会话");
   const listNow = await api.sessions.list(proj.id);
   const doomed = listNow.find((s) => s.name === '巡检-重命名');
   if (doomed) {
@@ -393,6 +407,7 @@
   }
 
   // ============ I. 设置读写 ============
+  prog("I. 设置读写");
   const s0 = await api.settings.get();
   const s1 = await api.settings.save({ model: { contextLength: 32768 } });
   const s2 = await api.settings.get();
@@ -400,6 +415,7 @@
   await api.settings.save({ model: { contextLength: s0.model.contextLength } });
 
   // ============ L. 设置模态框（入口在左下角，照 Bionic 的位置） ============
+  prog("L. 设置模态框（入口在左下角，照 Bionic 的位置）");
   // 老实现是右栏里一页竖排长表单：一个「保存并应用」按钮同时读 6 个分区、11 个字段，
   // 且在「模型端点」标题下面 —— 用户改了「审批」里的东西根本不知道该不该按它。
   // 现在拆成「左分类栏 + 每分区各自保存」，这里把这条不变量钉住。
@@ -496,7 +512,103 @@
     });
   }
 
+  // ============ O. 兜底模型：思考强度可调 + 「默认模型」专用会话 ============
+  prog("O. 兜底模型：思考强度可调 + 「默认模型」专用会话");
+  // 对应两句话：① 思考强度要在「设置 → 兜底模型」里能调；② 默认模型单独一个会话专用，
+  // 普通会话用不了它。两句都得在**界面上**有落点，所以这一段全走真实点击/真实 IPC。
+  {
+    const ordinary = (await api.sessions.list(proj.id)).find((s) => s.programId !== 'default-llm');
+    await loadSession(ordinary.id);
+    await wait(400);
+    const fb = (S.settings.fallback || {}).llm || {};
+    const fbName = fb.model;
+
+    // ---- O1~O3 兜底卡片里那一档「思考强度」 ----
+    openSettings('fallback');
+    await wait(400);
+    const fbBtn = $id('fb-llm-reasoning');
+    check('O1 兜底模型里有「思考强度」控件（可调）', !!fbBtn, fbBtn ? '' : '没找到 #fb-llm-reasoning');
+    const fbReason = fb.reasoning || '';
+    check('O2 它显示的就是当前生效的那一档',
+      !!fbBtn && fbBtn.dataset.v === fbReason && fbBtn.textContent.includes(fbReason === 'none' ? '不思考' : fbReason),
+      fbBtn && fbBtn.dataset.v + ' / ' + fbBtn.textContent);
+    fbBtn.click();
+    await wait(300);
+    const reasonItems = [...document.querySelectorAll('#sel-pop .sel-item')].map((e) => e.dataset.v);
+    check('O3 候选 =「跟出厂值」+ 内核下发的全部合法取值（界面没自己编字面值）',
+      reasonItems[0] === '' && reasonItems.length === S.reasoningLevels.length + 1 &&
+        JSON.stringify(reasonItems.slice(1)) === JSON.stringify(S.reasoningLevels),
+      JSON.stringify(reasonItems));
+    check('O3b 对照：候选确实不是空的（不是"空下拉"式的假绿）', reasonItems.length > 1, reasonItems.length);
+    closeSelect();
+    closeSettings();
+    await wait(300);
+
+    // ---- O4~O6 普通会话里，兜底模型**不是**可切换的目标 ----
+    // 造出最危险的那个情形：端点列表里就有这个模型名 + 用户确实配了自己的端点。
+    // 此时下拉若还塞一条"切换到这个模型"，用户点了会以为切好了 —— 其实改的是全局设置。
+    const savedOwn = { ...S.settings.modelOwn };
+    S.models = [fbName, 'zz-inspector-model'];       // 模拟 /v1/models 里确实有兜底那个名字
+    S.settings = await api.settings.save({ model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'zz-inspector-model' } });
+    $id('model-select').click();
+    await wait(300);
+    const mItems = [...document.querySelectorAll('#sel-pop .sel-item')].map((e) => ({ v: e.dataset.v, d: e.title }));
+    check('O4 普通会话的模型下拉里有别的模型（探针有区分度，不是空下拉）',
+      mItems.some((x) => x.v === 'zz-inspector-model'), JSON.stringify(mItems.map((x) => x.v)));
+    check('O5 ★ 里面没有"把兜底模型切到这个会话"这一项', !mItems.some((x) => x.v === fbName), JSON.stringify(mItems));
+    check('O6 ★ 取而代之的是"打开专用会话"那条入口',
+      mItems.some((x) => x.v === '@default-llm' && /专用会话/.test(x.d || '')),
+      JSON.stringify(mItems.filter((x) => x.v === '@default-llm')));
+    closeSelect();
+    S.settings = await api.settings.save({ model: savedOwn });   // 还原：别把巡检造的假端点留下来
+    S.models = [];
+    await wait(300);
+
+    // ---- O7~O12 从「新建会话」菜单里把专用会话真的建出来 ----
+    const sessBefore2 = (await api.sessions.list(proj.id)).length;
+    showNewSessionMenu();
+    await wait(300);
+    const menuItems = [...document.querySelectorAll('#new-session-menu .pop-item')];
+    check('O7 「新建会话」里有「默认模型（专用会话）」这一项',
+      menuItems.some((e) => e.innerText.includes('默认模型')), JSON.stringify(menuItems.map((e) => e.innerText.trim())));
+    menuItems.find((e) => e.innerText.includes('默认模型')).click();
+    await wait(1500);
+
+    const list2 = await api.sessions.list(proj.id);
+    const pinnedMeta = list2.find((s) => s.programId === 'default-llm');
+    check('O8 专用会话真的建出来了', !!pinnedMeta, JSON.stringify(list2.map((s) => s.programId)));
+    check('O9 它没有把别的会话搞多（就新建了一个）',
+      list2.length === sessBefore2 + 1 && !!pinnedMeta, { before: sessBefore2, after: list2.length });
+    const loadedPin = pinnedMeta ? await api.sessions.load({ projectId: proj.id, sessionId: pinnedMeta.id }) : {};
+    check('O10 ★ 内核给这个会话打上了 modelSource=fallback（端点整组走兜底）',
+      (loadedPin.session || {}).modelSource === 'fallback', JSON.stringify((loadedPin.session || {}).modelSource));
+    check('O11 界面上模型 chip 显示的是兜底那份模型',
+      $id('model-name').textContent === fbName, $id('model-name').textContent);
+    check('O12 顶栏有「默认模型」这枚标签，说明这个模型是从哪儿来的',
+      $id('session-pills').innerText.includes('默认模型'), $id('session-pills').innerText);
+
+    // ---- O13/O14 专用会话里模型是锁死的；同一动作在普通会话里必须是有反应的 ----
+    $id('model-select').click();
+    await wait(300);
+    const popInPin = $id('sel-pop');
+    const pinnedNoPop = !popInPin || popInPin.classList.contains('hidden');
+    check('O13 ★ 点它不会弹出可切换的模型下拉（这个会话的模型改不了）',
+      pinnedNoPop, popInPin && popInPin.className);
+
+    await loadSession(ordinary.id);
+    await wait(400);
+    $id('model-select').click();
+    await wait(300);
+    const popInOwn = $id('sel-pop');
+    const ownHasPop = !!popInOwn && !popInOwn.classList.contains('hidden') && popInOwn.querySelectorAll('.sel-item').length > 0;
+    closeSelect();
+    check('O14 反向对照：同样一次点击在普通会话里是**会**弹的 —— 证明 O13 不是探针失灵',
+      ownHasPop, popInOwn && popInOwn.className);
+    await wait(300);
+  }
+
   // ============ K. 运行状态按会话记账（老代码会永久卡死的那个） ============
+  prog("K. 运行状态按会话记账（老代码会永久卡死的那个）");
   // 老实现用一个全局布尔 S.running，而 agent:event 是按会话过滤的。
   // 于是：在会话 A 发消息 → 切到 B → A 这一轮结束（turn:end 被过滤丢掉）
   // → 切回 A，S.running 还是 true：发送键永久禁用，点停止也不会再有事件来复位。
@@ -529,6 +641,7 @@
   }
 
   // ============ J. 跨项目标签：关标签不能拿别的项目的会话 id 去加载 ============
+  prog("J. 跨项目标签：关标签不能拿别的项目的会话 id 去加载");
   // 标签栏是**所有项目共用**的一条数组（pane.tabs），而界面上只画当前项目的标签。
   // 用户真实数据里 active 停在 A 项目的标签上，切到 B 项目后关掉 B 自己的标签，
   // 旧逻辑拿 pane.tabs[active] 当"下一个" → 拿到 A 的会话 id → 报「会话不存在：xxx」。
@@ -565,6 +678,7 @@
   }
 
   // ============ N-2. 右栏内置浏览器 + 带行号的文本视图 ============
+  prog("N-2. 右栏内置浏览器 + 带行号的文本视图");
   // 用户要的：右栏换成内置浏览器（照 Bionic）；会话里点文件名则切到"带行号"的文本视图。
   {
     const r = {};
@@ -763,6 +877,7 @@
   }
 
   // ============ N-1. 左栏项目树：会话名的文字要和项目名首字母对齐 ============
+  prog("N-1. 左栏项目树：会话名的文字要和项目名首字母对齐");
   // 用户报的：「会话文字没有和上面项目名的首字母对齐」。
   // 实测差值 24px = 会话行那个**空图标位**(16px) + flex 的 gap(8px)。
   // 对齐不是"看着差不多"，是两行的文字起点必须是同一个 x —— 所以按像素断言。
@@ -798,6 +913,7 @@
   }
 
   // ============ N. 删除项目 ============
+  prog("N. 删除项目");
   // 用户要的语义：**删除项目只摘索引**，磁盘上的记录目录/会话/检查点/工作目录一律不动。
   // 所以除了"列表里没了"，更要断言"磁盘上还在" —— 后者才是这个动作安全的前提。
   {
@@ -897,6 +1013,7 @@
   }
 
   // ============ M. 转录渲染：空行不能变成大片空白 ============
+  prog("M. 转录渲染：空行不能变成大片空白");
   // 用户报「会话里还有很多空行」。根因是 mdToHtml 把空行也当成正文 push 进段落，
   // 再 join('<br>') —— 模型爱连着吐 \n\n\n\n\n，渲染出来就是一串 <br>；
   // 空行夹在列表间时还会撞出一个空的 <p></p>（浏览器默认 16px 边距）。
@@ -939,10 +1056,22 @@
     // ---- M7~M11：块之间的"幽灵空行" ----
     // 前置：J 段跑完是"没有打开的会话"（J2 就是断言 sessionId 为 null 的），转录是空的。
     // 不先把有内容的会话打开，下面这些 DOM 断言全是**空跑**（M10 就是这么暴露的：它的 data 是空数组）。
-    const rich = (await api.sessions.list(proj.id)).slice().sort((a, b) => (b.entryCount || 0) - (a.entryCount || 0))[0];
-    if (rich) { await setProject(proj.id, { sessionId: rich.id }); await wait(700); }
+    const all = await api.sessions.list(proj.id);
+    const rich = all.slice().sort((a, b) => (b.entryCount || 0) - (a.entryCount || 0))[0];
+    // 必须**主动把它打开**。原先写的是 setProject(proj.id, {sessionId: rich.id})，而
+    // setProject 的既有语义是"当前项目就是它 → 直接返回"，此时什么都不加载、也不报错：
+    // 断言就全落在上一个会话的画面上。以前没出事，是因为"删项目之后界面停在哪个会话上"
+    // 碰巧是有内容的那个（靠的是 K 段最后停在哪个会话）。一旦会话集合变了（比如新增一个
+    // 空会话被 K 段选中），这个偶然的依赖就断，M7~M11 一起红 —— 而画面本身一点没坏。
+    // loadSession 两种情形都覆盖（换项目 / 同项目直接载），正是这一段要的语义。
+    if (rich) { await loadSession(rich.id, proj.id); await wait(700); }
     const bubbles = [...document.querySelectorAll('#transcript .bubble.md')];
-    check('M7 有可测的气泡（否则 M8~M11 是空跑）', bubbles.length > 0, { sessionId: S.sessionId, bubbles: bubbles.length });
+    check('M7 有可测的气泡（否则 M8~M11 是空跑）', bubbles.length > 0, {
+      sessionId: S.sessionId, bubbles: bubbles.length,
+      // 失败时一眼看出"为什么没气泡"：挑中的是谁、它有几条、这个项目下各会话各几条
+      rich: rich && String(rich.id).slice(0, 8), richEntries: rich && rich.entryCount,
+      list: all.map((s) => String(s.id).slice(0, 8) + ':' + (s.entryCount || 0) + ':' + s.name),
+    });
 
     // 根因：.bubble 曾经是 white-space:pre-wrap，而 mdToHtml 用 out.join('\n') 拼块——
     // 那个字面换行被当成真换行渲染，每个块边界凭空多一整行（22px），

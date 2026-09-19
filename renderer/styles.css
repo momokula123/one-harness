@@ -656,6 +656,24 @@ button.ghost.sm { padding: 2px 8px; font-size: 11px; }
 .skill-card-desc { color: var(--text-2); font-size: 12px; line-height: 1.6; margin-top: 7px; }
 .skill-card-path { font-family: var(--mono); font-size: 11px; color: var(--text-4); margin-top: 7px; word-break: break-all; }
 
+/* 设置 → 兜底模型：两张卡（语言模型 / 生图）。样式与技能卡片同一套语言，
+   但类名分开 —— 技能卡片是「按技能库渲染的墙」，别让两处共用一个选择器。 */
+.fb-cards { display: grid; gap: 10px; }
+.fb-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-card); padding: 12px 14px; }
+.fb-card:hover { border-color: #c3d5fb; }
+.fb-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.fb-card-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.fb-card-top .pill { font-size: 10.5px; flex: none; }
+.fb-card .field { margin-top: 8px; }
+.fb-card-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.fb-card-foot .state { color: var(--text-3); font-size: 11px; }
+.fb-card.state-on { border-color: #cfe3cd; }
+.fb-card.state-off { border-color: #e6e6e6; background: var(--bg-2); }
+
+/* 生图工具卡里的成品图：比用户附件的缩略图大一点（它就是这一步的成果） */
+.tool-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.tool-imgs .img-thumb { width: 232px; height: 158px; margin-bottom: 0; }
+
 /* ---------- 弹窗 ---------- */
 .modal-backdrop { position: absolute; inset: 0; background: rgba(20, 21, 24, .34); display: flex; align-items: center; justify-content: center; z-index: 40; }
 .modal-backdrop.hidden { display: none; }

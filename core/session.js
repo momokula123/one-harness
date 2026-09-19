@@ -35,6 +35,10 @@ function createSession({ projectId, name, programId, workingDir, parentSessionId
     modules: modules || program.modules,
     approvalMode: program.approvalOverride || null, // null = 用全局设置
     model: null,                    // null = 用全局设置
+    // 端点来源。'fallback' = 这个会话固定走兜底那份端点（「默认模型」专用会话，见 core/prompts.js），
+    // null = 跟全局设置（用户自己配的那套，没配就兜底）。它由**程序预设**决定，
+    // 建完就不能改 —— sessions:update 的白名单里没有它，所以普通会话切不进来。
+    modelSource: program.modelSource || null,
     workingDir: workingDir || (project ? project.cwd : process.cwd()),
     parentSessionId: parentSessionId || null,
     subSessionType: subSessionType || null,
@@ -82,11 +86,17 @@ function assistantMessage(session, parts) {
   return appendEntry(session, { type: 'message', role: 'assistant', parts });
 }
 
-function toolMessage(session, { callId, name, text, isError, decision }) {
+function toolMessage(session, { callId, name, text, isError, decision, images }) {
   return appendEntry(session, {
     type: 'message',
     role: 'tool',
-    parts: [{ type: 'toolCallResult', callId, name, text, isError: !!isError, decision: decision || null }],
+    parts: [{
+      type: 'toolCallResult', callId, name, text, isError: !!isError, decision: decision || null,
+      // 工具产出的图（生图）：和用户附件一样**只记相对路径**，像素由界面按需取。
+      // 注意这不是"给模型看的图" —— OpenAI 的消息格式里只有 user 能带图，
+      // 所以工具产物对模型而言永远只有 text 那一份。
+      images: Array.isArray(images) && images.length ? images : null,
+    }],
   });
 }
 
@@ -282,7 +292,7 @@ function renderTranscript(session) {
       });
     } else if (e.type === 'message' && e.role === 'tool') {
       for (const p of e.parts || []) {
-        if (p.type === 'toolCallResult') rows.push({ kind: 'tool', id: e.id, ts: e.ts, callId: p.callId, name: p.name, text: p.text, isError: p.isError, decision: p.decision || null });
+        if (p.type === 'toolCallResult') rows.push({ kind: 'tool', id: e.id, ts: e.ts, callId: p.callId, name: p.name, text: p.text, isError: p.isError, decision: p.decision || null, images: p.images || [] });
       }
     } else if (e.type === 'turnSummary') {
       rows.push({ kind: 'summary', id: e.id, ts: e.ts, durationMs: e.durationMs, files: e.files || [] });

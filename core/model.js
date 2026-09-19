@@ -10,11 +10,13 @@ function joinUrl(base, suffix) {
  * OpenAI 兼容客户端的 BaseURL 只该填到 /v1，路径（/chat/completions、/models）由客户端自己拼；
  * 但 PCswitch 之类的面板给出的文档常写全路径（…/v1/chat/completions），照抄就会拼成
  * …/v1/chat/completions/chat/completions。这里统一剥掉尾部多出来的那截。
+ * 生图那条也一样：文档给的是 …/v1/images/generations，照抄进 image.json 也得能跑。
  */
 function normalizeBase(base) {
   let b = String(base || '').trim().replace(/\/+$/, '');
   b = b.replace(/\/chat\/completions$/i, '').replace(/\/completions$/i, '');
   b = b.replace(/\/models$/i, '').replace(/\/responses$/i, '');
+  b = b.replace(/\/images\/generations$/i, '').replace(/\/images$/i, '');
   return b.replace(/\/+$/, '');
 }
 
@@ -69,6 +71,10 @@ async function streamChat(cfg, { messages, tools, signal, onEvent = () => {}, id
     body.tool_choice = 'auto';
   }
   if (cfg.maxTokens && cfg.maxTokens > 0) body.max_tokens = cfg.maxTokens;
+  // 思考强度。取值只有 core/store.js 里那份白名单（实测自端点）能进来，
+  // 而且**只有"生效端点 = 兜底那份"时 cfg.reasoning 才有值** —— 用户自己那组永远被清空，
+  // 所以这里不必再判一次是不是兜底（判两次就会有第二个口径）。
+  if (cfg.reasoning) body.reasoning_effort = cfg.reasoning;
 
   const ac = new AbortController();
   let idleTimer = null;

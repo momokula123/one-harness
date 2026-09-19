@@ -64,6 +64,9 @@ const S = {
   programs: [],
   modules: [],
   catalog: [],
+  // 思考强度的合法取值。**由内核下发**（core/store.js 那份白名单，实测自端点），
+  // 界面不自己抄一份字面值 —— 抄了迟早会和内核走散。
+  reasoningLevels: [],
   projects: [],
   sessions: [],
   tree: {},            // 各项目下的会话（侧栏项目树用），{ projectId: [session] }
@@ -419,6 +422,7 @@ async function init() {
   S.programs = boot.programs;
   S.modules = boot.modules;
   S.catalog = boot.catalog;
+  S.reasoningLevels = boot.reasoningLevels || [];
   S.projects = boot.projects;
   S.roots = boot.roots;
 
@@ -776,11 +780,15 @@ function renderNewSessionMenu() {
     i.className = 'ic';
     i.setAttribute('data-ic', 'chat');
     const nm = document.createElement('span');
-    nm.textContent = p.label;
+    // 「默认模型」这一项行为和其他项不同（有就打开、没有才建），名字上标出来
+    nm.textContent = p.modelSource === 'fallback' ? p.label + '（专用会话）' : p.label;
     el.appendChild(i);
     el.appendChild(nm);
     el.onclick = () => {
       hideNewSessionMenu();
+      // 专用会话走"打开或新建"：它要的是**那一个**专供默认模型的选项卡，
+      // 不是每点一次多一个同名标签（见 openDefaultSession 的说明）。
+      if (p.modelSource === 'fallback') return openDefaultSession();
       createSession(p.id);
     };
     box.appendChild(el);
@@ -988,17 +996,66 @@ function openApprovalSelect() {
   });
 }
 
+// 「默认模型」专用会话：模型固定走兜底那份，切不了。
+// 它在会话列表里的唯一凭据是 programId（见 core/prompts.js 的 modelSource），
+// 内核那边记的是 session.modelSource —— 两处说的是同一件事，别各自判一套。
+const DEFAULT_LLM_PROGRAM = 'default-llm';
+// 下拉里那一项"去专用会话"用的哨兵值：模型名可以叫任何东西，得有个不会撞的名字
+const DEFAULT_LLM_ENTRY = '@default-llm';
+
+function sessionUsesFallback() {
+  return !!(S.session && S.session.modelSource === 'fallback');
+}
+
+/** 兜底那份语言模型的模型名（界面显示用） */
+function fallbackModelName() {
+  const fb = (S.settings && S.settings.fallback) || {};
+  return (fb.llm && fb.llm.model) || '';
+}
+
+/** 当前会话**实际**打哪个模型 —— 专用会话是兜底那份，普通会话是生效设置里那套 */
+function currentModelName() {
+  if (sessionUsesFallback()) return fallbackModelName();
+  return (S.settings && S.settings.model.model) || '';
+}
+
+/**
+ * 当前会话的上下文容量（占用条的分母）。
+ * 与内核**同口径** —— core/store.js 的 endpointFor：专用会话按兜底那份算（agnes 是 512K），
+ * 普通会话按生效设置那个数。两边不一致的话，界面会显示一个和"什么时候真的会压缩"对不上的百分比。
+ */
+function contextLimitOf() {
+  if (sessionUsesFallback()) {
+    const fb = ((S.settings && S.settings.fallback) || {}).llm || {};
+    const n = Number(fb.contextLength);
+    if (n > 0) return n;
+  }
+  return Number(S.settings.model.contextLength) || 16384;
+}
+
 function renderModelSelect() {
   const chip = $('model-select');
-  const cur = (S.settings && S.settings.model.model) || '';
+  const cur = currentModelName();
+  const pinned = sessionUsesFallback();
   const nameEl = $('model-name');
   if (nameEl) nameEl.textContent = cur || '未连接模型';
-  if (chip) chip.title = cur ? `模型：${cur}（点开切换）` : '未连接模型端点（点开选择）';
+  if (chip) {
+    chip.title = pinned
+      ? `「默认模型」专用会话：固定走兜底那份（${cur || '未配置'}），改不了`
+      : (cur ? `模型：${cur}（点开切换）` : '未连接模型端点（点开选择）');
+  }
 }
 
 /** 打开模型下拉 */
 function openModelSelect() {
-  const cur = (S.settings && S.settings.model.model) || '';
+  // 专用会话的模型是锁死的（会话建出来就带上 modelSource，没有改它的入口）。
+  // 与其给一个按了没反应的下拉，不如直接说清楚该去哪儿换。
+  if (sessionUsesFallback()) {
+    toast('这是「默认模型」专用会话：模型固定走兜底那份。想换模型请新建一个普通会话；想换兜底本身去「设置 → 兜底模型」');
+    return;
+  }
+  const cur = currentModelName();
+  const fbName = fallbackModelName();
   const list = S.models.slice();
   if (cur && !list.includes(cur)) list.unshift(cur);
   if (!list.length) {
@@ -1006,14 +1063,23 @@ function openModelSelect() {
     openSettings('general');
     return;
   }
-  openSelect('model-select', list.map((m) => ({
-    value: m,
-    label: m,
-    desc: m === cur ? '当前使用' : '切换到这个模型',
-  })), {
+  // ★ 兜底模型不进普通会话的"切换"候选：它有自己的专用会话。
+  // 留一条"切换到这个模型"在这儿，用户点了会以为切好了，实际是把全局设置改了 —— 两回事。
+  const items = list
+    .filter((m) => m !== fbName || m === cur)
+    .map((m) => ({ value: m, label: m, desc: m === cur ? '当前使用' : '切换到这个模型' }));
+  if (fbName) {
+    items.push({
+      value: DEFAULT_LLM_ENTRY,
+      label: fbName + '（默认模型）',
+      desc: '兜底模型：只能用在「默认模型」专用会话里。选它会打开那个会话，不动这里正在用的模型',
+    });
+  }
+  openSelect('model-select', items, {
     value: cur,
     width: 256,               // Bionic 的 md 档（16rem）：模型名字长，别跟着 chip 宽度挤
     onPick: async (v) => {
+      if (v === DEFAULT_LLM_ENTRY) return openDefaultSession();
       S.settings = await api.settings.save({ model: { model: v } });
       if (S.session) await api.sessions.update({ projectId: S.projectId, sessionId: S.sessionId, patch: { model: { model: v } } });
       renderModelSelect();
@@ -1021,6 +1087,23 @@ function openModelSelect() {
       toast('模型已切换为 ' + v, 'ok');
     },
   });
+}
+
+/**
+ * 打开「默认模型」专用会话；这个项目里还没有就建一个。
+ * 之所以"有就打开、没有才建"：它的定位就是**专门用默认模型的那一个选项卡**，
+ * 每点一次多一个同名标签的话，用户要找的就不再是"那一个"了。
+ */
+async function openDefaultSession() {
+  if (!S.projectId) { toast('先创建项目', 'err'); return null; }
+  const found = (S.sessions || []).find((s) => s.programId === DEFAULT_LLM_PROGRAM);
+  if (found) {
+    if (found.id === S.sessionId) { toast('已经在这个会话里了'); $('input').focus(); return found; }
+    await loadSession(found.id, S.projectId);
+    toast('已切到「默认模型」专用会话：它固定走兜底那份模型');
+    return found;
+  }
+  return createSession(DEFAULT_LLM_PROGRAM, '默认模型');
 }
 
 // ---------------- 会话 ----------------
@@ -1048,18 +1131,19 @@ async function refreshSessions() {
   renderTabs();
 }
 
-async function createSession(programId) {
+async function createSession(programId, name) {
   if (!S.projectId) {
     toast('先创建项目', 'err');
     return;
   }
-  const r = await api.sessions.create({ projectId: S.projectId, programId, name: '新会话' });
+  const r = await api.sessions.create({ projectId: S.projectId, programId, name: name || '新会话' });
   S.session = r.session;
   S.sessionId = r.session.id;
   applyLoaded(r);
   await refreshSessions();
   openTab(S.sessionId);
   $('input').focus();
+  return r.session;
 }
 
 /**
@@ -1149,6 +1233,9 @@ function applyLoaded(r) {
   S.previewCache.clear();
   renderAtts();
   syncRunning(); // 换了会话：S.running 是按当前会话算的派生值，必须重算
+  // 模型 chip 也是**按会话**的：「默认模型」专用会话显示的是兜底那份，普通会话显示生效设置那套。
+  // 不跟着重画的话，切到专用会话后 chip 还在说上一个会话的模型名。
+  renderModelSelect();
   renderTop();
   renderTranscript();
 }
@@ -1311,6 +1398,13 @@ function renderTop() {
       }
     }
     add(progLabel, 'lilac', progTip);
+    // 「默认模型」专用会话：模型不是来自「常规」那套，而是兜底那份。
+    // 这枚标签让"模型 chip 为什么显示这个"有出处 —— 否则用户会以为设置被改了。
+    if (sessionUsesFallback()) {
+      add('默认模型', 'sky',
+        '本会话固定走兜底那份语言模型：' + (fallbackModelName() || '未配置') +
+        '\n（地址/钥匙/模型名/思考强度都在「设置 → 兜底模型 → 语言模型」里改）');
+    }
     add(m.readOnly ? '只读' : '可写', m.readOnly ? 'warn' : 'mint',
       m.readOnly ? '本会话只读：可以读文件，不允许改动' : '本会话可写：允许改文件、执行命令');
     if (m.compaction) add('已压缩', 'sky', '本会话的上下文被压缩过：旧事件已折叠成摘要');
@@ -1321,7 +1415,7 @@ function renderTop() {
   // 用量明细（容量 / 占比 / 上次输入输出 / 本轮次数与合计）**直接铺在这一行上**，
   // 不再只藏在 title 的原生 tooltip 里（那个要悬停才看得到，等于没显示）。
   const u = m && m.usage;
-  const limit = S.settings.model.contextLength || 16384;
+  const limit = contextLimitOf();
   const hint = $('usage-hint');
   // 段间分隔点（几段数字挤在一起会读不出来哪段是哪段）
   const seg = () => '<span class="s">·</span>';
@@ -1566,6 +1660,16 @@ function toolCard(call, result) {
   }
   wrap.appendChild(head);
   wrap.appendChild(body);
+  // 产出图片的工具（生图）把图直接贴在卡片里 —— 用的是和用户附件同一个缩略图。
+  // 必须放在**所有 innerHTML 赋值之后**：`innerHTML +=` 会把已经 append 进去的节点
+  // 序列化再重新解析一遍，先 append 的缩略图会被换成新对象（就是那个"异步填像素填到了
+  // 被丢弃的节点上"的老坑）。这里图是给人看的：模型侧仍然只能读到结果里的文本。
+  if (result && Array.isArray(result.images) && result.images.length) {
+    const pics = document.createElement('div');
+    pics.className = 'tool-imgs';
+    for (const im of result.images) pics.appendChild(imgThumb(im));
+    body.appendChild(pics);
+  }
   head.onclick = () => wrap.classList.toggle('open');
   const row = document.createElement('div');
   row.className = 'row';
@@ -2349,21 +2453,75 @@ async function previewFile(absPath) {
 //      这里也只放内存，免得凭空多出一个 Bionic 里查不到的字段（test:bionic 会当场抓出来）。
 //   ③ voice / cloud / connected-apps / link / local-models-* 这些 One Harness 没有对应功能，不硬造空分区充数。
 const SETTINGS_GROUPS = [
-  { title: '设置', items: ['general', 'agent', 'appearance', 'sessions', 'advanced'] },
+  { title: '设置', items: ['general', 'fallback', 'agent', 'appearance', 'sessions', 'advanced'] },
   { title: '集成', items: ['skills'] },
 ];
+
+// 兜底模型卡片：一张给语言模型、一张给生图。两张都是"用户没配时顶上"的那份配置，
+// 与「常规」里正在用的模型**互不影响** —— 这正是要点：用户（或者 agent 自己）在这里改配置，
+// 不会把自己正在跑的那套改掉，也就不会出现"程序把自己配死"那种局面。
+const FALLBACK_CARDS = [
+  {
+    key: 'llm',
+    name: '语言模型（LLM）',
+    ctx: true,
+    reasoning: true,
+    tip: '「常规 → 模型端点」的 Base URL 与模型名都留空时，对话就走这里；「默认模型」专用会话也固定走这里。',
+    note: '出厂值来自随包的 config/model.json。这几项留空 = 用出厂值。',
+    saveId: 'btn-save-fb-llm',
+  },
+  {
+    key: 'image',
+    name: '生图（generate_image）',
+    tip: '所有生图请求都走这里（没有第二个图像端点的概念）。',
+    note: '出厂值来自随包的 config/image.json。agnes 家的模型名是 agnes-image-2.5-flash，地址填到 /v1 即可。',
+    saveId: 'btn-save-fb-image',
+  },
+];
+
+// 思考强度那一档的中文名。**取值表不在这儿** —— 它由内核下发（S.reasoningLevels），
+// 这里只负责把字面值翻成人话；等级名对不上时原样显示，不猜、不吞。
+const REASONING_LABELS = {
+  none: '不思考',
+  minimal: '极简',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+  max: '最高',
+};
+
+function reasoningLabelOf(v) {
+  if (!v) return '跟出厂值';
+  return (REASONING_LABELS[v] || v) + '（' + v + '）';
+}
+
+// 一个端点"填全了"没有 —— 与 core/store.js 的 hasOwnEndpoint 同一条规则
+// （baseUrl + 模型名算数，key 不算：本机端点本来就不要 key）。两处都必须一致，
+// 否则界面说"正在用你自己配的"、内核却判定没配，用户会看到完全相反的两句话。
+function endpointComplete(e) {
+  return !!(e && String(e.baseUrl || '').trim() && String(e.model || '').trim());
+}
 
 const SETTINGS_SECTIONS = {
   general: {
     label: '常规',
     render() {
       const s = S.settings;
+      // 输入框绑的是**用户自己填的原文**（modelOwn），不是"生效值"：
+      // 生效值可能是兜底顶上来的，把它填进输入框的话，用户随手一存就把兜底值
+      // 变成了"他自己配的" —— 之后改兜底卡片就再也不影响他了。
+      const own = s.modelOwn || s.model;
+      const usingFallback = !endpointComplete(own);
       return `
         <div class="group-title">模型端点</div>
-        <div class="field"><label>Base URL</label><input id="set-baseUrl" value="${esc(s.model.baseUrl)}" /></div>
-        <div class="field"><label>API Key</label><input id="set-apiKey" value="${esc(s.model.apiKey)}" /></div>
-        <div class="field"><label>模型</label><input id="set-model" value="${esc(s.model.model)}" list="model-options" /></div>
+        <div class="field"><label>Base URL</label><input id="set-baseUrl" value="${esc(own.baseUrl)}" placeholder="留空 = 用兜底模型" /></div>
+        <div class="field"><label>API Key</label><input id="set-apiKey" value="${esc(own.apiKey)}" /></div>
+        <div class="field"><label>模型</label><input id="set-model" value="${esc(own.model)}" list="model-options" placeholder="留空 = 用兜底模型" /></div>
         <datalist id="model-options">${(S.models || []).map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+        <div class="hint">${usingFallback
+          ? `现在<b>没有</b>用自己的端点（Base URL 与模型名都留空），整套走「兜底模型」：<code>${esc(s.model.model)}</code> @ <code>${esc(s.model.baseUrl)}</code>。想换成自己的，把上面两项都填上即可。`
+          : '现在用的是你自己配的这一组。'}上面这几项**要么都填、要么都别填**：只填一半时不会去兜底那份里"借"缺的那一项（把兜底家的 Key 发到你家地址上，是不会报错的那种错），而是整个按你填的来。</div>
         <div class="field">
           <label class="chk"><input type="checkbox" id="set-vision"${s.model.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
           <div class="hint">勾上之后，拖进输入框的图片会随消息一起交给模型。端点不会告诉程序"这个模型能不能看图"（/v1/models 只回 id），所以只能在这里声明。勾错了也不至于卡死：程序会剥掉图按纯文本重发一次，并提示你来这里取消勾选。</div>
@@ -2372,6 +2530,7 @@ const SETTINGS_SECTIONS = {
           <div><label>温度</label><input id="set-temp" type="number" step="0.1" min="0" max="2" value="${esc(s.model.temperature)}" /></div>
           <div><label>上下文长度</label><input id="set-ctx" type="number" step="1024" value="${esc(s.model.contextLength)}" /></div>
         </div>
+        <div class="hint">上下文长度只影响「什么时候自动压缩」和界面上的占用条，不影响请求本身。框里显示的就是<b>当前生效</b>的那个数${usingFallback ? `（现在走兜底模型，所以它是兜底那份自带的；想改到别处请去「兜底模型 → 语言模型」）` : ''}；在这填了别的数，就按你填的算。</div>
         <div class="row-inline">
           <button id="btn-test">拉取模型列表</button>
           <button id="btn-save-general" class="primary">保存并应用</button>
@@ -2443,6 +2602,96 @@ const SETTINGS_SECTIONS = {
         renderTop();
         toast('模型设置已保存', 'ok');
       });
+    },
+  },
+
+  fallback: {
+    label: '兜底模型',
+    render() {
+      const s = S.settings;
+      const fb = s.fallback || {};
+      const ownInUse = endpointComplete(s.modelOwn || {});
+      const cards = FALLBACK_CARDS.map((c) => {
+        const e = fb[c.key] || {};
+        // 语言模型那张只在"用户没配"时顶上；生图这张就是工具唯一的出处，永远算在用。
+        // 语言模型那张**永远**有人用：除了"常规里没填时顶上"，还有「默认模型」专用会话。
+        // 所以它在用户在「常规」里配了端点之后也不能写"未使用" —— 那会是一句假话。
+        const state = c.key === 'llm'
+          ? (ownInUse ? { cls: 'state-off', tag: '专用会话在用', why: '你在「常规」里配了自己的端点，所以普通会话走你那套；但「新建会话 → 默认模型」那个专用会话**始终**走这里。' }
+                      : { cls: 'state-on', tag: '正在生效', why: '「常规」里没配端点：普通对话和「默认模型」专用会话都走这里。' })
+          : { cls: 'state-on', tag: '生图就是走它', why: 'generate_image 只有这一个端点，没有"第二套"可切。' };
+        return `
+        <div class="fb-card ${state.cls}">
+          <div class="fb-card-top">
+            <span class="fb-card-name">${esc(c.name)}</span>
+            <span class="pill ${state.cls === 'state-on' ? 'mint' : ''}">${esc(state.tag)}</span>
+          </div>
+          <div class="hint">${esc(c.tip + state.why)}</div>
+          <div class="field"><label>Base URL</label><input id="fb-${c.key}-baseUrl" value="${esc(e.baseUrl)}" /></div>
+          <div class="field"><label>API Key</label><input id="fb-${c.key}-apiKey" value="${esc(e.apiKey)}" /></div>
+          <div class="field"><label>模型</label><input id="fb-${c.key}-model" value="${esc(e.model)}" list="model-options" /></div>
+          ${c.ctx ? `<div class="field"><label>上下文长度</label><input id="fb-${c.key}-ctx" type="number" step="1024" value="${esc(e.contextLength)}" placeholder="留空 = 用出厂值" /><div class="hint">这个模型自带的上下文大小（token）。它决定自动压缩的阈值和界面上的占用条 —— agnes-3.0-flash 是 524288（512K）。「常规」里那个同名框是**你自己端点**的，两者各管各的；正在用哪一套，就按那一套的算。</div></div>` : ''}
+          ${c.reasoning ? `<div class="field"><label>思考强度</label>
+            <button id="fb-${c.key}-reasoning" class="sel-trigger" aria-haspopup="listbox" aria-expanded="false" data-v="${esc(e.reasoning || '')}"><span class="sel-label">${esc(reasoningLabelOf(e.reasoning))}</span><span class="ic" data-ic="chevron"></span></button>
+            <div class="hint">就是请求里的 <code>reasoning_effort</code>：「不思考」出话快、适合日常；调高之后模型会先想一段再答（响应明显变慢，思考过程会显示在气泡里）。取值只能从下拉里那几个里选 —— 这是端点自己定的字面值，乱填（或大小写不对）它直接回 400。<br />这一项<b>只作用于兜底这份端点</b>：你要是配了自己的模型，它永远不会被带上（在「常规」里配了端点时，这里改什么都不影响你正在用的那套）。</div>
+          </div>` : ''}
+          <div class="fb-card-foot">
+            <button id="${c.saveId}" class="primary">保存</button>
+            <span class="state">${esc(c.note)}</span>
+          </div>
+        </div>`;
+      }).join('');
+      return `
+        <div class="group-title">兜底模型</div>
+        <div class="hint">这两张卡是**没配置时顶上来的那套**：语言模型那张在「常规 → 模型端点」没填时顶上，生图那张则是 generate_image 工具唯一的出处。两张卡与"正在用的模型"分开存放 —— 在这儿改不会动到正在跑的那套，反之也一样（这正是"能用兜底去配置 One Harness、却不会把程序自己配死"的前提）。<br />语言模型那张还多一个去处：「新建会话」里那个<b>「默认模型」专用会话</b>始终走它（哪怕你在「常规」里配了自己的端点）—— 想在不动自己模型的前提下用兜底模型，就用那个会话。<br />每项**留空 = 用随包 config/ 里的出厂值**；想用自己的 key（例如自己去 agnes 注册领一个），填进来保存即可。</div>
+        <div class="fb-cards">${cards}</div>
+      `;
+    },
+    bind() {
+      for (const c of FALLBACK_CARDS) {
+        // 思考强度：下拉选项**由内核下发的取值表**现拼（见 S.reasoningLevels 的说明），
+        // 前面加一档"跟出厂值"（空串）—— 空串会存成空串，于是将来改 config/model.json 还能跟着走。
+        if (c.reasoning) {
+          const btn = $('fb-' + c.key + '-reasoning');
+          if (btn) {
+            const paint = () => {
+              const lb = btn.querySelector('.sel-label');
+              if (lb) lb.textContent = reasoningLabelOf(btn.dataset.v);
+            };
+            paint();
+            btn.onclick = () => openSelect(btn, [{ value: '', label: '跟出厂值', desc: '用随包 config/model.json 里那句 reasoning' }]
+              .concat((S.reasoningLevels || []).map((v) => ({ value: v, label: reasoningLabelOf(v), desc: 'reasoning_effort = ' + v }))), {
+              value: btn.dataset.v,
+              density: 'normal',      // 设置里是表单控件，跟审批模式那档一致
+              width: 'fit',
+              minWidth: 220,
+              onPick: (v) => { btn.dataset.v = v; paint(); },
+            });
+          }
+        }
+        on(c.saveId, async () => {
+          const patch = {
+            baseUrl: $('fb-' + c.key + '-baseUrl').value.trim(),
+            apiKey: $('fb-' + c.key + '-apiKey').value.trim(),
+            model: $('fb-' + c.key + '-model').value.trim(),
+          };
+          // 上下文只给语言模型那张：它是模型属性，生图端点没有这一项。
+          // 空串保持空串（= 用出厂值），别写成 0 —— 0 会被当成"用户设成了 0"。
+          if (c.ctx) {
+            const raw = $('fb-' + c.key + '-ctx').value.trim();
+            patch.contextLength = raw === '' ? '' : Number(raw);
+          }
+          // 思考强度同理：空串 = 跟出厂走（内核存盘时会归一化，填了跟出厂一样的值也存空串）
+          if (c.reasoning) {
+            const tb = $('fb-' + c.key + '-reasoning');
+            patch.reasoning = (tb && tb.dataset.v) || '';
+          }
+          S.settings = await api.settings.save({ fallback: { [c.key]: patch } });
+          renderSettingsModal();
+          renderTop();
+          toast(c.name + '的兜底设置已保存', 'ok');
+        });
+      }
     },
   },
 
@@ -2708,6 +2957,9 @@ function renderSettingsModal() {
   const sec = SETTINGS_SECTIONS[S.settingsSection];
   const box = $('settings-content');
   box.innerHTML = sec.render();
+  // 设置内容里也有 data-ic（审批下拉的箭头等），插完 DOM 必须水合一次，
+  // 否则那些图标是空的 —— hydrateIcons 的契约就是"插完标记后调它"，别漏。
+  hydrateIcons(box);
   sec.bind();
 }
 

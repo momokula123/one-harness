@@ -585,9 +585,15 @@ function reasonOf(e) {
  * 决定"用哪个模型"：设置里填了且端点确实有，就照用；
  * 没填、或填的模型在这个端点上不存在，就用端点 /v1/models 推荐的第一个并落盘。
  * 这样换了端点不用先去设置里手填模型名，界面上的模型 chip 也会立刻显示实际在用的那个。
+ *
+ * **写回哪一侧**：正在用的是用户自己那组就写 model，正在用的是兜底就写兜底 ——
+ * 绝不能一律写进 model：那等于把兜底那套的模型名"钉"成用户自己填的，
+ * 之后用户改兜底卡片就再也不生效了（而他还以为自己在用兜底）。
  */
 async function resolveModel() {
-  const cfg = { ...store.getSettings().model };
+  const s = store.getSettings();
+  const cfg = { ...s.model };
+  const ownInUse = store.hasOwnEndpoint(s.modelOwn);
   let models = [];
   try {
     models = await model.listModels(cfg);
@@ -597,7 +603,7 @@ async function resolveModel() {
   if (!models.length) return { ok: true, models: [], model: cfg.model || '' };
   if (cfg.model && models.includes(cfg.model)) return { ok: true, models, model: cfg.model };
   const picked = models[0];
-  store.saveSettings({ model: { model: picked } });
+  store.saveSettings(ownInUse ? { model: { model: picked } } : { fallback: { llm: { model: picked } } });
   return { ok: true, models, model: picked, replaced: cfg.model || null };
 }
 
@@ -613,6 +619,9 @@ function registerIpc() {
       projects: store.listProjects(),
       roots: { dataDir: store.DATA_DIR, appDir: store.ROOT, uiStateDir: uistate.UI_STATE_DIR },
       catalogModes: ['auto', 'reviewer', 'always-ask'],
+      // 思考强度的合法取值：**只在内核那份白名单里定义**（core/store.js，实测自端点），
+      // 界面只是照它画下拉。界面自己再抄一份字面值，迟早会和内核的口径走散。
+      reasoningLevels: store.REASONING_LEVELS,
       ui: { global: uistate.readGlobal(), window: uistate.readWindow(WINDOW_KEY), windowKey: WINDOW_KEY },
     };
   });

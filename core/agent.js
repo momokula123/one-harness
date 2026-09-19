@@ -101,12 +101,20 @@ class Agent {
 
   modelConfig(session) {
     const s = this.getSettings();
+    // 这个会话该打哪个端点：普通会话 = 生效设置那一套（用户自己的，没配就是兜底）；
+    // 「默认模型」专用会话（session.modelSource === 'fallback'）**整组**换成兜底那份 ——
+    // 换地址、钥匙、模型名、上下文大小、思考强度一起换，不单个字段去借。
+    // 判定只有一处实现（store.endpointFor），压缩阈值/界面占用条用的是同一个。
+    const ep = store.endpointFor(s, session && session.modelSource);
     const base = {
-      baseUrl: s.model.baseUrl,
-      apiKey: s.model.apiKey,
-      model: s.model.model,
-      temperature: s.model.temperature,
-      maxTokens: s.model.maxTokens,
+      baseUrl: ep.baseUrl,
+      apiKey: ep.apiKey,
+      model: ep.model,
+      temperature: ep.temperature,
+      maxTokens: ep.maxTokens,
+      // 思考强度：普通会话走用户自己那套时这里恒为空串（store.getSettings 已经清掉），
+      // 于是"调兜底的思考强度"绝不会跑到用户正在用的模型上去。
+      reasoning: ep.reasoning || '',
     };
     // 这个模型能不能吃图。和模型名/温度一样支持**会话级覆盖**
     // （session.model 是既有的覆盖口），所以这里和它一起算，不另开一套。
@@ -116,12 +124,15 @@ class Agent {
     return { ...base, ...(session.model || {}), vision, settings: s };
   }
 
-  ctx(session, turn) {
+  ctx(session, turn, signal) {
     return {
       session,
       projectId: session.projectId,
       workingDir: session.workingDir,
       settings: this.getSettings(),
+      // 本轮的取消信号：工具里那些"几秒到几十秒"的网络请求（生图就是）要能跟着"停止"一起断，
+      // 否则用户按了停止还得干等几百秒。可选：没有 signal 的工具照旧。
+      signal: signal || null,
       approvedByUser: false,
       snapshot: (absPath) => {
         const rec = checkpoints.snapshot(session.projectId, session.id, absPath);
@@ -335,7 +346,7 @@ class Agent {
           }
 
           this.emit({ type: 'tool:start', sessionId: session.id, callId: call.callId, name: tool.alias, args, risk: gate.risk, reason: gate.reason });
-          const ctx = this.ctx(session, turn);
+          const ctx = this.ctx(session, turn, ac.signal);
           ctx.approvedByUser = gate.action === 'ask';
           const started = Date.now();
           const result = await tools.execute(call.name, call.argsText, ctx);
@@ -360,6 +371,8 @@ class Agent {
             name: tool.alias,
             text: result.text,
             isError: result.isError,
+            // 工具产出的图（生图）—— 给人看的，落进事件日志的只有相对路径
+            images: result.images,
             decision: {
               action: gate.action,
               risk: gate.risk,
@@ -437,6 +450,8 @@ function sessionMeta(session) {
     programId: session.programId,
     modules: session.modules,
     model: session.model,
+    // 界面上要据此显示"这个会话用的是兜底那份模型"，也让"普通会话不许切到它"能自证
+    modelSource: session.modelSource || null,
     workingDir: session.workingDir,
     approvalMode: session.approvalMode,
     readOnly: session.readOnly,
