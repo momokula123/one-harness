@@ -691,13 +691,13 @@ function askConfirm({ title, text, okLabel, cancelLabel, danger, loc }) {
  */
 async function removeProject(p) {
   const info = await api.projects.deleteInfo({ projectId: p.id });
-  const locPath = (info && info.projectDir) || null;
+  const locPath = (info && info.recordDir) || null;
   const ok = await askConfirm({
     title: '删除项目「' + p.name + '」',
     text: '本操作只删除此工程的索引（从列表中移除），不删除磁盘上的任何文件。' +
       ((info && info.sessionCount) ? '它的 ' + info.sessionCount + ' 个会话记录与工作目录都会原样保留。' : ''),
     loc: locPath ? {
-      label: '工程位置：',
+      label: '记录位置：',
       path: locPath,
       title: '点击打开这个文件夹（会话记录都在里面，删除后依然保留）',
       onOpen: () => api.shell.openPath(locPath),
@@ -2386,7 +2386,7 @@ const SETTINGS_SECTIONS = {
           <button id="btn-export-index">导出工程索引</button>
           <button id="btn-import-index" class="ghost">导入工程索引</button>
         </div>
-        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。导出的只是**索引**（每个工程的 id / 名字 / 工作目录，几 KB），不含会话正文 —— 正文在数据目录的 projects/&lt;工程 id&gt;/sessions/ 下，要连正文一起搬就整个拷贝数据目录。</div>
+        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。索引是**指针**（每个工程的 id / 名字 / 工程文件夹地址，几 KB）。会话记录**不在索引里** —— 它就在工程文件夹自己的 .one-harness 子目录下，跟着文件夹走：把文件夹带到哪，对话就跟到哪。</div>
         <div class="hint">导入是**只增不减**的：同一个工程（id 相同）会被跳过，本机已有的名字与工作目录不会被备份里的旧值覆盖；本机多出来的工程也不受影响。</div>
       `;
     },
@@ -2410,7 +2410,8 @@ const SETTINGS_SECTIONS = {
         if (r.skipped) bits.push('已有 ' + r.skipped + ' 个跳过');
         if (r.invalid) bits.push('另有 ' + r.invalid + ' 条记录不完整已忽略');
         let msg = '导入完成：' + bits.join('，');
-        if (r.orphan) msg += '。其中 ' + r.orphan + ' 个在本机没有会话记录，正文要单独拷贝数据目录才是完整的';
+        if (r.gone) msg += '。其中 ' + r.gone + ' 个指向的工程文件夹在本机不存在（把文件夹放回原处就能用）';
+        else if (r.empty) msg += '。其中 ' + r.empty + ' 个还是空工程（文件夹里没有会话记录）';
         toast(msg, r.added ? 'ok' : '');
       });
       on('btn-test', async () => {
@@ -2596,15 +2597,52 @@ const SETTINGS_SECTIONS = {
 
   skills: {
     label: '技能',
+    // 一个技能一张卡：名字 + 常驻/按需 + 随包/自装 + 描述 + 所在文件夹 + 「查看」。
+    // 卡片顺序按 tier 分组，因为"常驻"是有代价的（正文每轮都进系统提示），
+    // 分开放眼一看就知道上下文被谁占了。
     render() {
+      const all = S.skills || [];
+      if (!all.length) {
+        return `
+          <div class="group-title">技能库</div>
+          <div class="empty-note">还没有技能。技能就是技能目录里的一个文件夹，里面放一份 SKILL.md。</div>
+          <div class="row-inline" style="margin-top:10px"><button id="btn-open-skills-dir" class="ghost">打开技能目录</button></div>
+        `;
+      }
+      const intro = all.filter((s) => s.tier === 'intro');
+      const outro = all.filter((s) => s.tier !== 'intro');
+      const card = (s) => `
+        <div class="skill-card">
+          <div class="skill-card-top">
+            <span class="skill-card-name">${esc(s.name)}</span>
+            <span class="pill ${s.tier === 'intro' ? 'mint' : 'warn'}">${s.tier === 'intro' ? '常驻' : '按需'}</span>
+            <span class="pill sky">${s.source === 'builtin' ? '随包' : '自装'}</span>
+            <button class="ghost skill-card-btn" data-skill-view="${esc(s.name)}">查看</button>
+          </div>
+          <div class="skill-card-desc">${esc(s.description || '这份 SKILL.md 没有写 description。')}</div>
+          <div class="skill-card-path" title="${esc(s.path)}">${esc(s.dir)}</div>
+        </div>`;
+      const group = (title, note, arr) => (arr.length ? `
+        <div class="group-title">${title} · ${arr.length} 个</div>
+        <div class="hint" style="margin:-3px 0 9px">${note}</div>
+        <div class="skill-cards">${arr.map(card).join('')}</div>` : '');
       return `
-        <div class="group-title">技能库</div>
-        <div class="row-inline"><button id="btn-open-skills-dir" class="ghost">打开技能目录</button></div>
-        <div class="hint">技能就是技能目录下的一个个文件夹（每个里面一份 SKILL.md）。系统提示里只暴露技能名和描述，模型需要时用 read_skill 读全文。</div>
+        <div class="hint" style="margin-top:0">技能 = 技能目录里的一个文件夹，里面一份 SKILL.md。当前共 ${all.length} 个 —— 常驻 ${intro.length}、按需 ${outro.length}。</div>
+        ${group('常驻', '正文每轮都进系统提示，只该放"必须一直遵守"的规范。', intro)}
+        ${group('按需', '系统提示里只给名字与一句话描述；模型判断相关后自己用 read_skill 读全文。', outro)}
+        <div class="row-inline" style="margin-top:16px"><button id="btn-open-skills-dir" class="ghost">打开技能目录</button></div>
       `;
     },
     bind() {
       on('btn-open-skills-dir', () => api.skills.openDir());
+      for (const b of document.querySelectorAll('[data-skill-view]')) {
+        b.onclick = async () => {
+          const name = b.dataset.skillView;
+          closeSettings();
+          switchPanel('skills');
+          await selectSkill(name);
+        };
+      }
     },
   },
 
@@ -2685,9 +2723,34 @@ function renderToolsPanel() {
       </div>`).join('');
 }
 
-async function refreshSkills() {
-  S.skills = await api.skills.list();
-  if (S.panel === 'skills') renderSkillsPanel();
+// 并发合并：切到技能页会刷新一次，「设置 → 卡片里的查看」也会刷新一次，
+// 两次并发跑完各自 renderSkillsPanel()，后完成的那次会把刚灌进文本框的内容清掉。
+// 共用同一次刷新就没这个窗口了（第二次 await 到的就是第一次的结果）。
+let skillsRefreshPromise = null;
+function refreshSkills() {
+  if (skillsRefreshPromise) return skillsRefreshPromise;
+  skillsRefreshPromise = (async () => {
+    try {
+      S.skills = await api.skills.list();
+      if (S.panel === 'skills') renderSkillsPanel();
+    } finally {
+      skillsRefreshPromise = null;
+    }
+  })();
+  return skillsRefreshPromise;
+}
+
+/** 选中一个技能：先等面板按最新列表渲染完，再把正文灌进文本框 */
+async function selectSkill(name) {
+  await refreshSkills();
+  const full = await api.skills.read(name);
+  if (!full) return toast('读不到这个技能：' + name, 'err');
+  $('skill-name').value = name;
+  $('skill-content').value = full.content || '';
+  $('skill-edit-title').textContent = '内容 · ' + full.path;
+  for (const c of document.querySelectorAll('#skill-chips .chip')) {
+    c.classList.toggle('on', c.dataset.skill === name);
+  }
 }
 
 function renderSkillsPanel() {
@@ -2712,13 +2775,9 @@ function renderSkillsPanel() {
     const c = document.createElement('div');
     c.className = 'chip';
     c.textContent = s.name;
-    c.title = s.description;
-    c.onclick = async () => {
-      const full = await api.skills.read(s.name);
-      $('skill-name').value = s.name;
-      $('skill-content').value = full ? full.content : '';
-      $('skill-edit-title').textContent = '内容 · ' + s.path;
-    };
+    c.title = (s.description || s.name) + '\n' + s.path;
+    c.dataset.skill = s.name;
+    c.onclick = () => selectSkill(s.name);
     chips.appendChild(c);
   }
   $('btn-skill-save').onclick = async () => {

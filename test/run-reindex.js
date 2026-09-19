@@ -3,10 +3,11 @@
 // 运行： node test/run-reindex.js
 //
 // 为什么要单独一个跑分器，而不是塞进 run-ui 的常规套件：
-// 本场景要的初始状态是「工程目录里有会话正文，但 projects.json 里没有这一行」——
+// 本场景要的初始状态是「工程文件夹里已经有会话正文，但 projects.json 里没有这一行」——
 // **这个不一致状态没法用 API 造出来**（走 API 建会话必然同时写索引），
 // 所以必须在起界面之前用 core 直接铺好数据，而常规 UI 套件每次都是干净数据目录。
-// （顺带：这个状态不是造假的产物，它就是「删除项目只摘索引、正文留在盘上」之后的样子。）
+// （顺带：这个状态不是造假的产物，它就是「删除项目只摘索引」之后的样子 ——
+//  记录躺在工程文件夹里，指针没了。）
 
 const { spawnSync } = require('child_process');
 const path = require('path');
@@ -15,22 +16,24 @@ const fs = require('fs');
 const ROOT = path.resolve(__dirname, '..');
 const TMP = path.join(ROOT, 'test', '.tmp-reindex');
 const DATA = path.join(TMP, 'data');
+const OLD_WS = path.join(TMP, 'old-ws'); // 老工程的**工程文件夹**：记录就落在它里面
 
 // ---------- ① 铺数据（必须在 require store 之前定好数据目录）----------
 fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(DATA, { recursive: true });
+fs.mkdirSync(OLD_WS, { recursive: true });
 process.env.HATCH_DATA_DIR = DATA;
 
 const store = require('../core/store');
 const sessionLib = require('../core/session');
 
-const project = store.createProject('老工程', 'C:/tmp/old-ws');
+const project = store.createProject('老工程', OLD_WS);
 const ses = sessionLib.createSession({ projectId: project.id, name: '老机器上的会话' });
 sessionLib.userMessage(ses, '你好');
 sessionLib.assistantMessage(ses, [{ type: 'text', text: '在' }]);
 store.saveSession(project.id, ses);
 
-// 摘掉索引行 —— 正文仍留在 projects/<id>/sessions/ 下
+// 摘掉索引行 —— 正文仍留在 <工程文件夹>/.one-harness/sessions/ 下
 store.writeProjects([]);
 
 // 给界面的「导入」准备一份同 id 的索引备份（HATCH_OPEN_PATH 指过来，不弹原生框）

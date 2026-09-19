@@ -676,7 +676,7 @@ function registerIpc() {
     }
     const ok = store.deleteProject(projectId);
     console.log('[projects] 删除（只摘索引）' + JSON.stringify({ name: info.name, id: projectId }) +
-      '；磁盘保留：' + info.projectDir + '；工作目录：' + (info.cwd || '—'));
+      '；磁盘保留：' + info.recordDir + '；工作目录：' + (info.cwd || '—'));
     return { ok, info, message: ok ? '' : '删除失败：项目不在列表里' };
   });
   ipcMain.handle('projects:pickFolder', async () => {
@@ -735,9 +735,13 @@ function registerIpc() {
     }
     if (!r.ok) return { ok: false, message: r.error };
     console.log('[projects] 导入索引 ' + JSON.stringify({
-      path: r.path, added: r.added, skipped: r.skipped, total: r.total, orphan: r.orphan, invalid: r.invalid,
+      path: r.path, added: r.added, skipped: r.skipped, total: r.total,
+      gone: r.gone, empty: r.empty, invalid: r.invalid,
     }));
-    return { ok: true, path: r.path, added: r.added, skipped: r.skipped, total: r.total, orphan: r.orphan, invalid: r.invalid };
+    return {
+      ok: true, path: r.path, added: r.added, skipped: r.skipped, total: r.total,
+      gone: r.gone, empty: r.empty, invalid: r.invalid,
+    };
   });
 
   ipcMain.handle('sessions:list', (_e, projectId) => store.listSessions(projectId));

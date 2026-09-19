@@ -138,7 +138,8 @@
   const locRow = $id('confirm-loc-row');
   out.locRowVisible = !locRow.classList.contains('hidden');
   out.locPath = $id('confirm-loc').textContent;
-  out.locLooksLikePath = /[\\/]projects[\\/]/.test(out.locPath);
+  // 路径形态：盘符开头即可（记录目录现在落在**工程文件夹**里，不再必然是 …\projects\<id>\ 那种）
+  out.locLooksLikePath = /^[A-Za-z]:[\\/]/.test(out.locPath) && out.locPath.length > 8;
   out.locIsButton = $id('confirm-loc').tagName === 'BUTTON';
 
   // 先取消：什么都不该变

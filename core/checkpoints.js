@@ -1,6 +1,7 @@
 'use strict';
 // 检查点：内容寻址快照 + 日志 + 按消息回滚
-// 布局：data/projects/<pid>/checkpoints/blobs/<sha256>   与   checkpoints/log.jsonl
+// 布局：<工程文件夹>/.one-harness/checkpoints/blobs/<sha256>   与   checkpoints/log.jsonl
+// （跟着工程文件夹走，和会话记录同一个落脚点）
 
 const fs = require('fs');
 const path = require('path');
@@ -8,7 +9,7 @@ const crypto = require('crypto');
 const store = require('./store');
 
 function cpDir(projectId) {
-  return store.ensureDir(path.join(store.projectDir(projectId), 'checkpoints'));
+  return store.ensureDir(path.join(store.projectDataDir(projectId), 'checkpoints'));
 }
 
 function blobsDir(projectId) {

@@ -821,14 +821,14 @@
     // 会话数不止 1：界面的「新建项目」建完项目会顺手建一个会话（app.js 的 btn-new-project），
     // 所以这里只能断言"至少 1 个"，并把它当作后面"一条没少"的基准。
     const sessCountBefore = tInfo && tInfo.sessionCount;
-    check('N1 deleteInfo 报出项目目录、工作目录与会话数',
-      tInfo && sessCountBefore >= 1 && !!tInfo.projectDir && !!tInfo.cwd,
-      tInfo && { n: sessCountBefore, dir: !!tInfo.projectDir, cwd: !!tInfo.cwd });
-    // 测试环境里 HATCH_PICK_FOLDER 指向 test/.tmp-ui/probe-proj（在项目记录目录**之外**），
-    // 所以这里该认出"是用户自己的目录"。反过来那支（自动创建的 workspace 在目录里）由
-    // smoke 的 6b 段覆盖，两处各测一半。
-    check('N2 deleteInfo 认出工作目录在项目目录之外（=用户自己的目录，绝不能删）',
-      tInfo && tInfo.cwdInsideProjectDir === false, tInfo && { cwd: tInfo.cwd, dir: tInfo.projectDir });
+    check('N1 deleteInfo 报出记录目录、工作目录与会话数',
+      tInfo && sessCountBefore >= 1 && !!tInfo.recordDir && !!tInfo.cwd,
+      tInfo && { n: sessCountBefore, dir: !!tInfo.recordDir, cwd: !!tInfo.cwd });
+    // 测试环境里 HATCH_PICK_FOLDER 指向 test/.tmp-ui/probe-proj（**不是**程序在数据目录里
+    // 自建的那种 workspace），所以这里该认出"是用户自己的目录"。反过来那支（自建 workspace）
+    // 由 smoke 的 6b 段覆盖，两处各测一半。
+    check('N2 deleteInfo 认出这是用户自己的目录（不是程序自建的 workspace，绝不能删）',
+      tInfo && tInfo.selfWorkspace === false, tInfo && { cwd: tInfo.cwd, dir: tInfo.recordDir });
 
     // 界面入口：项目行右侧那个常驻的删除按钮（不是悬停才出现的）
     const row = [...document.querySelectorAll('#project-tree .node')]
@@ -847,13 +847,13 @@
       check('N5 点了弹应用内确认框，且文案写明「删索引、不删任何文件」',
         opened && /索引/.test(text) && /不删除/.test(text), { opened, text: text.slice(0, 80) });
       check('N5b 文案精简（用户点名要求：别在正文里堆路径）', text.length <= 80, text.length);
-      // 路径改挂在一行可点的「工程位置」上，指向项目记录目录（会话都在里面，删了也保留）
+      // 路径改挂在一行可点的「记录位置」上，指向工程的记录目录（会话都在里面，删了也保留）
       const locRow = $id('confirm-loc-row');
       const locBtn = $id('confirm-loc');
-      check('N6 工程位置单独一行、可点，且指向项目记录目录',
+      check('N6 记录位置单独一行、可点，且指向工程的记录目录',
         !locRow.classList.contains('hidden') && locBtn.tagName === 'BUTTON' &&
-        !!tInfo && locBtn.textContent === tInfo.projectDir,
-        { hidden: locRow.classList.contains('hidden'), text: locBtn.textContent, want: tInfo && tInfo.projectDir });
+        !!tInfo && locBtn.textContent === tInfo.recordDir,
+        { hidden: locRow.classList.contains('hidden'), text: locBtn.textContent, want: tInfo && tInfo.recordDir });
       check('N6b 位置行也说明了"删除后依然保留"', /保留/.test(locBtn.title || ''), locBtn.title);
 
       // 取消 → 什么都不该发生
@@ -871,19 +871,25 @@
       check('N8 确认后从项目列表里消失', !listAfter.some((p) => p.id === target.id), listAfter.map((p) => p.name));
       check('N9 侧栏树上也不留残影',
         ![...document.querySelectorAll('#project-tree .nm')].some((n) => n.textContent === '巡检-待删项目'));
-      // ★ 磁盘必须原样还在。
-      // 注意：deleteInfo 走的是 getProject()，而项目已经不在列表里了 → 它必然返回 null，
-      // 用它来证明"磁盘还在"是错的（第一版就这么假红了）。要证明磁盘还在，得**直接读盘**：
-      // 项目目录、会话文件、以及"能不能把会话内容完整读出来"三件事。
-      const sessStill = tInfo && tInfo.projectDir
-        ? await api.sessions.list(target.id)
-        : [];
-      check('N10 ★ 会话记录一条没少（列表没了，磁盘上的记录还在）',
-        sessStill.length === sessCountBefore, { before: sessCountBefore, after: sessStill.length });
-      const mine = sessStill.find((s) => s.id === tSess.session.id);
-      check('N11 ★ 我们那个会话仍在磁盘记录里', !!mine, sessStill.map((s) => s.name));
-      const reloaded = mine ? await api.sessions.load({ projectId: target.id, sessionId: tSess.session.id }) : null;
-      check('N12 ★ 会话内容仍能被完整读出来（索引没了但内容在，含刚存的审批模式）',
+      // ★ 记录必须原样还在，而且要能"重新认回来"。
+      // 新模型：记录落在**工程文件夹**里（<文件夹>/.one-harness/sessions/），projects.json 只是指针。
+      // 删索引 = 摘掉指针 → 按旧 id 当然查不到（记录不挂在 id 上，挂在文件夹上），
+      // 但磁盘一个字节没动：**重新打开那个文件夹**就该原样认回来。
+      const sessByOldId = await api.sessions.list(target.id);
+      check('N10 摘掉索引后按旧 id 查不到会话（记录不挂在索引上）',
+        sessByOldId.length === 0, { after: sessByOldId.length });
+
+      const folder = tInfo.root;
+      const reopened = await api.projects.create({ name: '巡检-重新打开', cwd: folder });
+      const back = await api.sessions.list(reopened.id);
+      check('N11 ★ 重新打开同一个文件夹，会话一条没少（记录跟着文件夹走）',
+        back.length === sessCountBefore, { before: sessCountBefore, after: back.length });
+      const again = await api.projects.create({ name: '再开一次', cwd: folder });
+      check('N11b ★ 同一个文件夹再打开一次不会变出第二个工程（按地址认工程）',
+        again.id === reopened.id, { first: reopened.id, second: again.id });
+      const mine = back.find((s) => s.id === tSess.session.id);
+      const reloaded = mine ? await api.sessions.load({ projectId: reopened.id, sessionId: tSess.session.id }) : null;
+      check('N12 ★ 会话内容仍能被完整读出来（含刚存的审批模式）',
         !!reloaded && reloaded.meta && reloaded.meta.approvalMode === 'auto',
         reloaded && reloaded.meta && reloaded.meta.approvalMode);
     }

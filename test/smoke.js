@@ -305,7 +305,7 @@ async function main() {
   {
     const p2 = store.createProject('坏日志项目', path.join(TMP, 'workspace2'));
     const f2 = path.join(p2.cwd, 'x.txt');
-    const cpDir = path.join(store.projectDir(p2.id), 'checkpoints');
+    const cpDir = path.join(store.projectDataDir(p2.id), 'checkpoints');
     fs.mkdirSync(cpDir, { recursive: true });
     fs.writeFileSync(
       path.join(cpDir, 'log.jsonl'),
@@ -344,21 +344,21 @@ async function main() {
     const vSess = sessionLib.createSession({ projectId: victim.id, name: '待删会话', programId: 'coder' });
     vSess.instruction = require('../core/prompts').PROMPTS.coder;
     store.saveSession(victim.id, vSess);
-    const vDir = store.projectDir(victim.id);
+    const vDir = store.projectDataDir(victim.id);
     const vSessionFile = store.sessionFile(victim.id, vSess.id);
-    check('删除前：项目目录与会话文件都在', fs.existsSync(vDir) && fs.existsSync(vSessionFile), { vDir });
+    check('删除前：记录目录与会话文件都在', fs.existsSync(vDir) && fs.existsSync(vSessionFile), { vDir });
 
     const info = store.projectDeleteInfo(victim.id);
     check('deleteInfo 报出会话数与工作目录', info && info.sessionCount === 1 && info.cwd === outside,
       info && JSON.stringify({ n: info.sessionCount, cwd: info.cwd }));
-    check('deleteInfo 认出工作目录在项目目录之外（=用户自己的目录）',
-      info && info.cwdInsideProjectDir === false, info && info.cwdInsideProjectDir);
+    check('deleteInfo 认出这是用户自己的目录（不是程序自建的 workspace）',
+      info && info.selfWorkspace === false, info && info.selfWorkspace);
 
-    // 自动生成的 workspace 那种（cwd 就在项目目录里）也要判对
+    // 自动生成的 workspace 那种（cwd 就是程序在数据目录里给它建的那个）也要判对
     const autoProj = store.createProject('自动 workspace 项目', null);
     const autoInfo = store.projectDeleteInfo(autoProj.id);
-    check('deleteInfo 认出自动创建的 workspace（在项目目录里）',
-      autoInfo && autoInfo.cwdInsideProjectDir === true, autoInfo && JSON.stringify({ cwd: autoInfo.cwd, dir: autoInfo.projectDir }));
+    check('deleteInfo 认出自动创建的 workspace',
+      autoInfo && autoInfo.selfWorkspace === true, autoInfo && JSON.stringify({ cwd: autoInfo.cwd, dir: autoInfo.recordDir }));
 
     const okDel = store.deleteProject(victim.id);
     check('deleteProject 返回 true', okDel === true);
@@ -371,8 +371,18 @@ async function main() {
     check('★ 会话记录文件仍然在', fs.existsSync(vSessionFile), vSessionFile);
     check('★ 用户的工作目录与里面的文件一根汗毛都没动',
       fs.existsSync(outside) && fs.readFileSync(path.join(outside, 'user-file.txt'), 'utf8') === '用户的文件', outside);
-    check('会话仍然能被读出来（索引没了但内容还在）',
-      (store.listSessions(victim.id) || []).some((s) => s.id === vSess.id));
+    // 新模型：记录挂在**工程文件夹**上，索引只是指针。指针摘掉后按旧 id 自然查不到 ——
+    // 但重新打开那个文件夹就该原样认回来（这才是"删索引不删数据"的完整证明）。
+    check('摘掉索引后，按旧 id 已经查不到会话（记录不挂在索引上）',
+      !(store.listSessions(victim.id) || []).some((s) => s.id === vSess.id));
+    {
+      const reopened = store.createProject('重新打开', outside);
+      check('★ 重新打开同一个文件夹，会话原样都在（记录跟着文件夹走）',
+        (store.listSessions(reopened.id) || []).some((s) => s.id === vSess.id), { id: reopened.id });
+      check('★ 同一个文件夹再打开一次不会变出第二个工程（按地址认工程）',
+        store.createProject('再开一次', outside).id === reopened.id);
+      store.deleteProject(reopened.id);
+    }
 
     // 不能误伤别的项目
     check('别的项目不受影响（原测试项目还在）', store.listProjects().some((p) => p.id === project.id));
@@ -587,28 +597,34 @@ async function main() {
   check('补回来的字段与本机原值逐项一致（这个名字/工作目录/创建时间都要还原）',
     !!idxBack && idxBack.name === '索引往返项目' && idxBack.cwd === idxProj.cwd && idxBack.createdAt === idxProj.createdAt,
     JSON.stringify(idxBack));
-  check('新增的工程在本机没有会话记录 → orphan 说出来（免得以为会话被吞了）', im2.orphan === 1, String(im2.orphan));
+  check('导入的新工程：文件夹在、里面还没记录 → empty 记 1（如实说它是空工程）',
+    im2.gone === 0 && im2.empty === 1, JSON.stringify({ gone: im2.gone, empty: im2.empty }));
 
-  // ---- orphan 的两半对照：它说的是"本机有没有这个工程的会话正文"，不是别的 ----
-  // 真实场景：把老机器的 data/ 拷过来（正文已经在盘上）之后再导索引 ——
-  // 这时候如果还弹"没有会话记录"，用户会白紧张一场（点开明明能看）。
-  // 同一份备份、同一个工程，只改"盘上有没有正文"，orphan 必须跟着变。
-  store.deleteProject(idxProj.id);                                  // 摘索引，正文目录不动
+  // ---- gone / empty 三态对照：它们说的是"工程文件夹在不在、里面有没有记录"，不是别的 ----
+  // 实际场景就是换台机器导索引：记录跟着工程文件夹走，所以"文件夹在不在"决定这条指得到指不到。
+  // 三态（文件夹在+有记录 / 文件夹在+没记录 / 文件夹不在）数字必须跟着变，否则就是假信号。
+  store.deleteProject(idxProj.id);                                  // 摘索引，磁盘一律不动
   const diskSession = sessionLib.createSession({ projectId: idxProj.id, name: '盘上就有的会话' });
   sessionLib.userMessage(diskSession, '你好');
-  store.saveSession(idxProj.id, diskSession);
+  store.saveSession(idxProj.id, diskSession);                       // 记录落在 <工程文件夹>/.one-harness/ 下
   const imBody = store.importProjectIndex(idxFile);
-  check('正文已在盘上时：导入只报新增，orphan 是 0（不报缺正文）',
-    imBody.ok === true && imBody.added === 1 && imBody.orphan === 0, JSON.stringify(imBody));
+  check('文件夹在、记录也在：gone 和 empty 都是 0（不无中生有地报警）',
+    imBody.ok === true && imBody.added === 1 && imBody.gone === 0 && imBody.empty === 0, JSON.stringify(imBody));
   check('而且那条正文还读得出来（导入没把它弄丢）',
     (() => { const l = store.listSessions(idxProj.id); return l.length === 1 && l[0].name === '盘上就有的会话'; })(),
     JSON.stringify(store.listSessions(idxProj.id).map((s) => s.name)));
 
   store.deleteProject(idxProj.id);
-  fs.rmSync(path.join(store.PROJECTS_DIR, idxProj.id), { recursive: true, force: true });  // 这次连正文一起删
+  fs.rmSync(path.join(idxProj.cwd, '.one-harness'), { recursive: true, force: true });
   const imNoBody = store.importProjectIndex(idxFile);
-  check('对照：同一个工程、正文不在时 orphan 就是 1（证明这个数字有区分度，不是恒 0）',
-    imNoBody.ok === true && imNoBody.added === 1 && imNoBody.orphan === 1, JSON.stringify(imNoBody));
+  check('对照一：文件夹还在、记录被清掉 → empty 是 1（工程在，只是空的）',
+    imNoBody.ok === true && imNoBody.added === 1 && imNoBody.gone === 0 && imNoBody.empty === 1, JSON.stringify(imNoBody));
+
+  store.deleteProject(idxProj.id);
+  fs.rmSync(idxProj.cwd, { recursive: true, force: true });         // 连工程文件夹一起删
+  const imGone = store.importProjectIndex(idxFile);
+  check('对照二：工程文件夹都不在 → gone 是 1（指针指到空处，数字必须跟着变）',
+    imGone.ok === true && imGone.added === 1 && imGone.gone === 1 && imGone.empty === 0, JSON.stringify(imGone));
 
 
   // 手工造一份"带杂质的备份"：外来字段、同 id 改名、空名字、缺 id

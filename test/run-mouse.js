@@ -23,7 +23,10 @@ const OUT = path.join(TMP, 'mouse-result.json');
 // "导入读到的是这一轮导出的"还是"上一轮的残留"
 const IDX_FILE = path.join(TMP, 'projects-export.json');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
-const TIMEOUT_MS = Number(process.env.HATCH_MOUSE_TIMEOUT || 240000);
+// 240s 会把套件本身跑不完误判成"挂死"：2026-09-19 加了"设置技能卡片"那 6 条之后，
+// 整场实测超过 240s（同一条命令给到 420s 就 63/63 全绿）。超时是给"真挂死"兜底的，
+// 不该比正常耗时贴得这么近。
+const TIMEOUT_MS = Number(process.env.HATCH_MOUSE_TIMEOUT || 420000);
 
 if (!fs.existsSync(ELECTRON)) {
   console.error('找不到 Electron：' + ELECTRON);

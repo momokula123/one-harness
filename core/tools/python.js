@@ -72,7 +72,7 @@ const runPython = {
       return { text: '没有找到可用的 Python 解释器。请在设置里填写 python 可执行文件的完整路径。', isError: true };
     }
     if (!cachedPython) cachedPython = py;
-    const scratch = store.ensureDir(path.join(store.projectDir(ctx.session.projectId), 'sessions', 'scratch'));
+    const scratch = store.ensureDir(path.join(store.projectDataDir(ctx.session.projectId), 'sessions', 'scratch'));
     const file = path.join(scratch, `run_${Date.now()}.py`);
     fs.writeFileSync(file, args.code, 'utf8');
     const root = ctx.workingDir;

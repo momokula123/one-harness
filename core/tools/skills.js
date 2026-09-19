@@ -13,11 +13,17 @@ function skillSources() {
   // DATA_DIR/skills/intro = 用户放入的规范类技能
   // DATA_DIR/skills/outro = 用户放入的按需技能
   // DATA_DIR/skills/<name> = 未分类的历史布局，按 outro 处理
+  // source 只用于界面区分"随包 / 你自己放的"，不参与加载逻辑。
   return [
-    { dir: path.join(store.APP_ROOT, 'skills'), tier: 'intro' },
-    { dir: path.join(store.DATA_DIR, 'skills', 'intro'), tier: 'intro' },
-    { dir: path.join(store.DATA_DIR, 'skills', 'outro'), tier: 'outro' },
-    { dir: path.join(store.DATA_DIR, 'skills'), tier: 'outro' },
+    // 随包技能的规范布局：skills/intro（正文常驻）/ skills/outro（只进索引）
+    // —— 官方自带的技能就该走这里：随包走、任何数据目录都看得到、换版本不用再拷一遍。
+    { dir: path.join(store.APP_ROOT, 'skills', 'intro'), tier: 'intro', source: 'builtin' },
+    { dir: path.join(store.APP_ROOT, 'skills', 'outro'), tier: 'outro', source: 'builtin' },
+    // 兼容最早的老布局：直接摊在 skills/ 下面的一律当常驻（chinese-report 那批原本就在这儿）
+    { dir: path.join(store.APP_ROOT, 'skills'), tier: 'intro', source: 'builtin' },
+    { dir: path.join(store.DATA_DIR, 'skills', 'intro'), tier: 'intro', source: 'user' },
+    { dir: path.join(store.DATA_DIR, 'skills', 'outro'), tier: 'outro', source: 'user' },
+    { dir: path.join(store.DATA_DIR, 'skills'), tier: 'outro', source: 'user' },
   ];
 }
 
@@ -55,6 +61,7 @@ function listSkills() {
         description: parsed.meta.description || '',
         userInvocable: parsed.meta['user-invocable'] !== 'false',
         tier: src.tier,
+        source: src.source || 'user',
         path: file,
         dir: path.dirname(file),
       });

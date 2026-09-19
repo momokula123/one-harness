@@ -645,6 +645,17 @@ button.ghost.sm { padding: 2px 8px; font-size: 11px; }
 .chip:hover { background: var(--bg-2); }
 .chip.on { background: var(--accent-soft); border-color: #c3d5fb; color: var(--accent); }
 
+/* ---------- 设置 → 技能：一个技能一张卡 ---------- */
+.skill-cards { display: grid; gap: 8px; }
+.skill-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-card); padding: 10px 12px; }
+.skill-card:hover { border-color: #c3d5fb; }
+.skill-card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.skill-card-name { font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-card .pill { font-size: 10.5px; flex: none; }
+.skill-card-btn { margin-left: auto; flex: none; padding: 3px 10px; }
+.skill-card-desc { color: var(--text-2); font-size: 12px; line-height: 1.6; margin-top: 7px; }
+.skill-card-path { font-family: var(--mono); font-size: 11px; color: var(--text-4); margin-top: 7px; word-break: break-all; }
+
 /* ---------- 弹窗 ---------- */
 .modal-backdrop { position: absolute; inset: 0; background: rgba(20, 21, 24, .34); display: flex; align-items: center; justify-content: center; z-index: 40; }
 .modal-backdrop.hidden { display: none; }

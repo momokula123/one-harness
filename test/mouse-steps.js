@@ -149,6 +149,52 @@ module.exports = async ({ click, dblclick, probe, js, wait, log, input, hover, d
   add('设置：真鼠标能切分区，内容跟着换', cSec.reachable === true && after.active === 'appearance' && after.hasWidthInput === true && after.text !== before,
     { before, after });
 
+  // ---- 7b-2. 设置 → 技能：卡片、以及卡片上的「查看」，都要能被真实鼠标点到 ----
+  // 鼠标巡检用的是干净数据目录（一个技能都没有），而卡片是"技能库非空才渲染"的，
+  // 所以先用应用自己的接口造一个技能出来，再来点卡片。
+  const madeSkill = await js(`(async () => {
+    await window.hatch.skills.save({
+      name: 'mouse-probe-skill',
+      content: '---\\nname: mouse-probe-skill\\ndescription: 鼠标巡检用的技能\\n---\\n\\n这是正文。\\n',
+    });
+    await refreshSkills();
+    return (S.skills || []).map((s) => s.name);
+  })()`);
+  add('技能卡片前置：造出一个技能（卡片是"有技能才渲染"的）',
+    Array.isArray(madeSkill) && madeSkill.includes('mouse-probe-skill'), madeSkill);
+
+  const cSecSkills = await click('#settings-nav .item[data-sec="skills"]', '设置里的「技能」分区');
+  const cardsInfo = await js(`(() => {
+    const cards = [...document.querySelectorAll('#settings-content .skill-card')];
+    return {
+      n: cards.length,
+      names: cards.map((c) => c.querySelector('.skill-card-name').textContent),
+      modalOpen: !document.getElementById('settings-modal').classList.contains('hidden'),
+    };
+  })()`);
+  add('设置 → 技能：真鼠标切到该分区，卡片渲染出来且与技能库一一对应',
+    cSecSkills.reachable === true && cardsInfo.modalOpen === true &&
+      Array.isArray(madeSkill) && cardsInfo.n === madeSkill.length && cardsInfo.n > 0,
+    { topmost: cSecSkills.topmost, ...cardsInfo });
+
+  const cView = await click('#settings-content .skill-card [data-skill-view]', '卡片上的「查看」');
+  const afterView = await js(`(() => ({
+    settingsClosed: document.getElementById('settings-modal').classList.contains('hidden'),
+    skillsPanel: !document.getElementById('panel-skills').classList.contains('hidden'),
+    name: document.getElementById('skill-name').value,
+    bodyLen: (document.getElementById('skill-content').value || '').length,
+  }))()`);
+  add('卡片「查看」：真鼠标点下去 → 关设置、切到技能页、正文灌进文本框（就是这张卡那个技能）',
+    cView.reachable === true && afterView.settingsClosed === true && afterView.skillsPanel === true &&
+      afterView.bodyLen > 0 && afterView.name === cardsInfo.names[0],
+    { topmost: cView.topmost, want: cardsInfo.names[0], ...afterView });
+
+  // 反向对照：设置关掉之后，那个「查看」按钮就不该再是可达的 ——
+  // 证明上面的 reachable=true 来自"真的能命中"，不是探针对什么都回 true。
+  const gone = await probe('#settings-content .skill-card [data-skill-view]');
+  add('对照：关掉设置后那个「查看」按钮不再可点（可达性探针有区分度）',
+    gone.found === false || gone.reachable === false, gone);
+
   // ---- 7c. 下拉浮层（自绘，替代原生 <select>）：真鼠标开关 + 选中 + 键盘 ----
   // 原生 select 的选项列表是系统画的，所以这里验的是我们自绘的那套：
   // 点触发器要开、点条目要选中并回写到触发器、点别处/Esc/再点触发器要关。

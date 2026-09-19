@@ -23,6 +23,12 @@ const DATA_DIR = process.env.HATCH_DATA_DIR ? path.resolve(process.env.HATCH_DAT
 const PROJECTS_DIR = path.join(DATA_DIR, 'projects');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
+// 程序在**工程文件夹里**落记录用的子目录：会话、检查点、临时文件都放它下面。
+// 记录跟着工程文件夹走 —— 文件夹拷到哪、对话跟到哪；换一个程序版本打开同一个文件夹，
+// 对话照样在，因为读的就是这个文件夹。程序数据目录里只留 projects.json 那张指针表。
+// （以前记录放在 <数据目录>/projects/<工程 id>/ 下，等于把用户数据收到程序自己的目录里，
+//  文件夹一换位置对话就"消失"了 —— 那是不对的。）
+const RECORD_DIR = '.one-harness';
 
 const DEFAULT_SETTINGS = {
   model: {
@@ -135,21 +141,39 @@ function listProjects() {
   return readJson(PROJECTS_FILE, { projects: [] }).projects;
 }
 
+/**
+ * 建工程 —— **先按地址查重**：同一个工程文件夹永远只对应一个工程。
+ * 以前每个 id 各认各的，同一个文件夹被打开两次就是两个工程、两套记录
+ * （本机数据里同一个 someidea 有三条、rmzmv1070 有四条），所以必须先认地址。
+ * 没给地址（或给的目录不存在）时，在数据目录里给它一个自建 workspace 当工程文件夹。
+ */
 function createProject(name, cwd) {
+  const want = cwd && String(cwd).trim() ? path.resolve(String(cwd)) : null;
+  if (want && fs.existsSync(want)) {
+    const same = listProjects().find((p) => p.cwd && path.resolve(p.cwd) === want);
+    if (same) return same;
+  }
   const id = newId();
-  const dir = path.join(PROJECTS_DIR, id);
-  const workspace = cwd && fs.existsSync(cwd) ? cwd : path.join(dir, 'workspace');
-  ensureDir(workspace);
-  ensureDir(path.join(dir, 'sessions'));
-  const project = { id, name: name || '未命名项目', cwd: workspace, createdAt: Date.now() };
+  const root = want && fs.existsSync(want) ? want : path.join(PROJECTS_DIR, id, 'workspace');
+  ensureDir(root);
+  const project = { id, name: name || '未命名项目', cwd: root, createdAt: Date.now() };
   const db = readJson(PROJECTS_FILE, { projects: [] });
   db.projects.push(project);
   writeJsonAtomic(PROJECTS_FILE, db);
   return project;
 }
 
-function projectDir(projectId) {
-  return path.join(PROJECTS_DIR, projectId);
+/** 工程文件夹 —— 用户自己的目录，也是记录的落脚点。读路径，不建目录。 */
+function projectRoot(projectId) {
+  const p = getProject(projectId);
+  if (p && p.cwd) return p.cwd;
+  // 索引里没有这一行、或那一行没有 cwd：退回它自建的 workspace
+  return path.join(PROJECTS_DIR, projectId, 'workspace');
+}
+
+/** 程序为这个工程写下的记录目录：<工程文件夹>/.one-harness */
+function projectDataDir(projectId) {
+  return path.join(projectRoot(projectId), RECORD_DIR);
 }
 
 function getProject(projectId) {
@@ -184,22 +208,23 @@ function deleteProject(projectId) {
 
 /**
  * 删除前给界面写确认文案用的事实（只读，不删任何东西）：
- * 项目自己的记录目录、工作目录、会话数、工作目录是不是就在记录目录里（自动创建的 workspace）。
+ * 工程文件夹（用户自己的目录）、程序写下的记录目录、会话数，
+ * 以及工作目录是不是程序自建的那个 workspace（只有那种才归程序自己管）。
  */
 function projectDeleteInfo(projectId) {
   const p = getProject(projectId);
   if (!p) return null;
-  const dir = projectDir(projectId);
-  const rel = p.cwd ? path.relative(dir, p.cwd) : '';
   let sessionCount = 0;
   try { sessionCount = listSessions(projectId).length; } catch (_) { sessionCount = 0; }
+  const selfWs = path.join(PROJECTS_DIR, projectId, 'workspace');
   return {
     id: p.id,
     name: p.name,
     cwd: p.cwd || null,
-    projectDir: dir,
+    root: p.cwd || null,
+    recordDir: projectDataDir(projectId),
     sessionCount,
-    cwdInsideProjectDir: !!rel && !rel.startsWith('..') && !path.isAbsolute(rel),
+    selfWorkspace: !!p.cwd && path.resolve(p.cwd) === path.resolve(selfWs),
   };
 }
 
@@ -221,8 +246,10 @@ function exportProjectIndex(destPath, meta) {
 
 /**
  * 导入：解析 → 合并（只增不减，见 core/project-index.js 的 merge）→ 写回。
- * 返回的 orphan = 新增的工程里有几个在本机**没有会话记录** —— 索引拿回来了但正文没跟过来，
- * 这个数字必须说出来，否则用户看到"工程回来了、会话是空的"会以为记录被吞了。
+ * 索引导入只接回**指针**，所以要照实说两件事（都不代表出错，但用户得知道）：
+ *   gone  = 指向的工程文件夹在本机不存在 —— 这条目前指不到东西（文件夹放回原处就恢复）；
+ *   empty = 文件夹在、但里面还没有记录 —— 就是个空工程。
+ * 会话正文本来就在工程文件夹里、跟着文件夹走，所以这里没有"搬正文"这回事。
  */
 function importProjectIndex(srcPath) {
   let text;
@@ -238,11 +265,14 @@ function importProjectIndex(srcPath) {
   const merged = projectIndex.merge(before, parsed.projects);
   if (merged.added) writeProjects(merged.projects);
 
-  let orphan = 0;
+  let gone = 0;
+  let empty = 0;
   for (const id of merged.addedIds) {
+    const p = getProject(id);
+    if (!p || !p.cwd || !fs.existsSync(p.cwd)) { gone++; continue; }
     let n = 0;
     try { n = listSessions(id).length; } catch (_) { n = 0; }
-    if (!n) orphan++;
+    if (!n) empty++;
   }
   return {
     ok: true,
@@ -250,7 +280,8 @@ function importProjectIndex(srcPath) {
     added: merged.added,
     skipped: merged.skipped,
     total: merged.projects.length,
-    orphan,
+    gone,
+    empty,
     declared: parsed.meta.declared,
     // 文件里声称 N 条、实际能用的只有 M 条 → 差额是"缺 id 之类被忽略"的行数。
     // 单独报出来，免得手工整理过的清单里少了几条却没人发现（skipped 只说"已有"）。
@@ -260,8 +291,11 @@ function importProjectIndex(srcPath) {
 }
 
 // ---- sessions ----
+// 会话记录落在**工程文件夹**里：<工程文件夹>/.one-harness/sessions/<会话 id>.json。
+// 读路径不建目录（ensureDir 只在写的时候调）—— 否则工程文件夹被删掉后，程序光看一眼列表
+// 就会把它又"建"出来。
 function sessionsDir(projectId) {
-  return ensureDir(path.join(projectDir(projectId), 'sessions'));
+  return path.join(projectDataDir(projectId), 'sessions');
 }
 
 function sessionFile(projectId, sessionId) {
@@ -270,6 +304,7 @@ function sessionFile(projectId, sessionId) {
 
 function listSessions(projectId) {
   const dir = sessionsDir(projectId);
+  if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith('.json'))
@@ -292,6 +327,7 @@ function loadSession(projectId, sessionId) {
 
 function saveSession(projectId, session) {
   session.updatedAt = Date.now();
+  ensureDir(sessionsDir(projectId));
   writeJsonAtomic(sessionFile(projectId, session.id), session);
   return session;
 }
@@ -316,7 +352,7 @@ module.exports = {
   init, ensureDir, readJson, writeJsonAtomic, deepMerge, getSettings, saveSettings,
   newId, shortId, listProjects, createProject, getProject, updateProject, deleteProject,
   uniquePath,
-  projectDeleteInfo, projectDir,
+  projectDeleteInfo, projectRoot, projectDataDir, RECORD_DIR,
   writeProjects, exportProjectIndex, importProjectIndex,
   listSessions, loadSession, saveSession, sessionFile, copyFileIfExists,
 };
