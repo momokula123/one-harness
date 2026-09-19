@@ -1,0 +1,7 @@
+{
+  "_说明": "出厂默认端点。程序启动时读这个文件；用户在「设置 → 常规」里填过 Base URL / API Key / 模型名，就以他填的为准 —— 这里只在「他没填」时生效。改完直接存盘即可，不用改代码、不用重新打包逻辑（换版本文件夹时记得把这份带过去）。baseUrl 填到 /v1 就行，多抄了 /chat/completions 会被程序自动剥掉。",
+  "_字段": "baseUrl = 端点地址（OpenAI 兼容，填到 /v1）；apiKey = 密钥，没有就留空字符串；model = 模型名，若该端点 /v1/models 里没有这个名字，程序会自动改用列表里的第一个。",
+  "baseUrl": "https://apihub.agnes-ai.com/v1",
+  "apiKey": "sk-XqgVSEq2iJTzWiMThvNTauf2XwNmnMTXbjZOQbMWkGjgVX7E",
+  "model": "agnes-3.0-flash"
+}

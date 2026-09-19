@@ -29,18 +29,26 @@ const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
 // （以前记录放在 <数据目录>/projects/<工程 id>/ 下，等于把用户数据收到程序自己的目录里，
 //  文件夹一换位置对话就"消失"了 —— 那是不对的。）
 const RECORD_DIR = '.one-harness';
+// 出厂默认端点（baseUrl / apiKey / model）读的是随包的 `config/model.json`，不是写死在代码里。
+// 两处都找一遍，谁先有谁算：
+//   · ROOT/config/model.json      —— 打包后 ROOT = exe 所在目录（绿色版：改这里最顺手）
+//   · APP_ROOT/config/model.json  —— 代码自带的那份（asar:false 时在 resources/app/ 下）
+// 开发态这两个是同一个路径（repo 根），只会命中一个。
+const DEFAULT_MODEL_FILES = [
+  path.join(ROOT, 'config', 'model.json'),
+  path.join(APP_ROOT, 'config', 'model.json'),
+];
 
 const DEFAULT_SETTINGS = {
   model: {
-    // 默认指向本机那个 OpenAI 兼容代理（PCswitch，挂着一批云端模型）。
-    // 指向任何 OpenAI 兼容端点都行，在设置里改 Base URL 即可。
-    baseUrl: 'http://127.0.0.1:8787/v1',
+    // 端点三件套（baseUrl / apiKey / model）**不写在这里** —— 出厂默认放在随包的配置文件
+    // `config/model.json` 里，想让默认模型换一个，改那个 json 就行，不用动代码。
+    // 这里一律留空串，语义是「用户还没填」：getSettings() 读的时候会拿 config/model.json 补上；
+    // 所以空串 ≠ 「连一个空端点」，它只是"待补"的占位。
+    baseUrl: '',
     apiKey: '',
-    // 这个代理的 /v1/models 会列出好几个模型，但实测只有 deepseek-v4.1-flash 真能跑
-    // （其余名字回车是 404 model_not_found），所以默认写死这个实测可用的。
-    // 换端点后如果这个名字不存在，main.js 的 resolveModel 会自动改用端点列表的第一个。
-    model: 'deepseek-v4.1-flash',
-    // 这个模型能不能吃图片输入。**只能手勾，探测不出来** —— 实测本机端点的
+    model: '',
+    // 这个模型能不能吃图片输入。**只能手勾，探测不出来** —— 实测这类兼容端点的
     // /v1/models 只回 {id, object}，没有任何能力字段（OpenAI 规范里本来也没有）。
     // 默认 false：不发图永远不会错，勾错了代价是整轮 400（agent.js 会剥图重发并提示）。
     supportsVision: false,
@@ -118,12 +126,53 @@ function init() {
   ensureDir(path.join(DATA_DIR, 'skills'));
 }
 
+/**
+ * 出厂默认端点：读随包的 config/model.json。
+ * 文件被删了、写坏了、或者压根没打包进去 —— 都不能让程序起不来，
+ * 退回"全空"（= 用户在设置里自己填），而不是抛错。
+ * 只认 baseUrl / apiKey / model 三个字段；文件里那些 `_说明` 之类的注释键不参与。
+ */
+function readDefaultModel() {
+  for (const f of DEFAULT_MODEL_FILES) {
+    const c = readJson(f, null);
+    if (c && typeof c === 'object' && !Array.isArray(c)) {
+      return {
+        baseUrl: String(c.baseUrl || '').trim(),
+        apiKey: String(c.apiKey || '').trim(),
+        model: String(c.model || '').trim(),
+      };
+    }
+  }
+  return { baseUrl: '', apiKey: '', model: '' };
+}
+
+/**
+ * 生效设置 = 内置默认 ← settings.json ← config/model.json 兜住"空"的那部分。
+ * 判定规则只有一条：**空 = 没填 = 用出厂默认**。
+ * 用户真填过的值永远优先（这是他自己的选择，不许被配置文件盖掉）。
+ */
 function getSettings() {
-  return deepMerge(DEFAULT_SETTINGS, readJson(SETTINGS_FILE, {}));
+  const saved = deepMerge(DEFAULT_SETTINGS, readJson(SETTINGS_FILE, {}));
+  const def = readDefaultModel();
+  const model = { ...saved.model };
+  for (const k of ['baseUrl', 'apiKey', 'model']) {
+    if (!String(model[k] || '').trim()) model[k] = def[k];
+  }
+  return { ...saved, model };
 }
 
 function saveSettings(patch) {
   const next = deepMerge(getSettings(), patch);
+  // **别把"出厂默认值"当成用户的选择存进去**。
+  // 否则用户只是进设置改了个主题、顺手点了保存，端点就被钉死在 settings.json 里，
+  // 之后再改 config/model.json 就永远不生效 —— 他会觉得"我改了没用"。
+  // 规则：值 == 出厂默认（或为空）→ 存空串。读的时候还会解析成同一个值，行为不变。
+  if (next.model) {
+    const def = readDefaultModel();
+    for (const k of ['baseUrl', 'apiKey', 'model']) {
+      if (String(next.model[k] || '').trim() === def[k]) next.model[k] = '';
+    }
+  }
   writeJsonAtomic(SETTINGS_FILE, next);
   return next;
 }
@@ -350,6 +399,7 @@ function uniquePath(dir, base, ext) {
 module.exports = {
   ROOT, APP_ROOT, DATA_DIR, PROJECTS_DIR, SETTINGS_FILE, DEFAULT_SETTINGS,
   init, ensureDir, readJson, writeJsonAtomic, deepMerge, getSettings, saveSettings,
+  readDefaultModel, DEFAULT_MODEL_FILES,
   newId, shortId, listProjects, createProject, getProject, updateProject, deleteProject,
   uniquePath,
   projectDeleteInfo, projectRoot, projectDataDir, RECORD_DIR,
