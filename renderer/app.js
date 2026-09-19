@@ -780,13 +780,13 @@ function renderNewSessionMenu() {
     i.className = 'ic';
     i.setAttribute('data-ic', 'chat');
     const nm = document.createElement('span');
-    // 「默认模型」这一项行为和其他项不同（有就打开、没有才建），名字上标出来
+    // 专用会话这一项行为和其他项不同（有就打开、没有才建），名字上标出来
     nm.textContent = p.modelSource === 'fallback' ? p.label + '（专用会话）' : p.label;
     el.appendChild(i);
     el.appendChild(nm);
     el.onclick = () => {
       hideNewSessionMenu();
-      // 专用会话走"打开或新建"：它要的是**那一个**专供默认模型的选项卡，
+      // 专用会话走"打开或新建"：它要的是**那一个**走自带模型的选项卡，
       // 不是每点一次多一个同名标签（见 openDefaultSession 的说明）。
       if (p.modelSource === 'fallback') return openDefaultSession();
       createSession(p.id);
@@ -996,12 +996,14 @@ function openApprovalSelect() {
   });
 }
 
-// 「默认模型」专用会话：模型固定走兜底那份，切不了。
+// 「One Harness」专用会话：模型固定走程序自带的那份，切不了。
 // 它在会话列表里的唯一凭据是 programId（见 core/prompts.js 的 modelSource），
 // 内核那边记的是 session.modelSource —— 两处说的是同一件事，别各自判一套。
 const DEFAULT_LLM_PROGRAM = 'default-llm';
 // 下拉里那一项"去专用会话"用的哨兵值：模型名可以叫任何东西，得有个不会撞的名字
 const DEFAULT_LLM_ENTRY = '@default-llm';
+// 这个会话的标签名 / 左栏那个固定入口的文字。**只此一处**，改文案别在两处各写一遍。
+const DEFAULT_SESSION_LABEL = 'One Harness';
 
 function sessionUsesFallback() {
   return !!(S.session && S.session.modelSource === 'fallback');
@@ -1041,9 +1043,12 @@ function renderModelSelect() {
   if (nameEl) nameEl.textContent = cur || '未连接模型';
   if (chip) {
     chip.title = pinned
-      ? `「默认模型」专用会话：固定走兜底那份（${cur || '未配置'}），改不了`
+      ? `${DEFAULT_SESSION_LABEL} 专用会话：固定走程序自带的那份（${cur || '未配置'}），改不了`
       : (cur ? `模型：${cur}（点开切换）` : '未连接模型端点（点开选择）');
   }
+  // 左栏那个固定入口的高亮跟着一起刷新 —— 它俩问的是同一个问题（"当前会话是不是它"），
+  // 放在这里就不会出现"chip 说在专用会话里、左栏却没亮"这种不一致。
+  renderFootDefault();
 }
 
 /** 打开模型下拉 */
@@ -1051,7 +1056,7 @@ function openModelSelect() {
   // 专用会话的模型是锁死的（会话建出来就带上 modelSource，没有改它的入口）。
   // 与其给一个按了没反应的下拉，不如直接说清楚该去哪儿换。
   if (sessionUsesFallback()) {
-    toast('这是「默认模型」专用会话：模型固定走兜底那份。想换模型请新建一个普通会话；想换兜底本身去「设置 → 兜底模型」');
+    toast('这是 ' + DEFAULT_SESSION_LABEL + ' 专用会话：模型固定走程序自带的那份。想换模型请新建一个普通会话；想换自带模型本身去「设置 → 兜底模型」');
     return;
   }
   const cur = currentModelName();
@@ -1063,7 +1068,7 @@ function openModelSelect() {
     openSettings('general');
     return;
   }
-  // ★ 兜底模型不进普通会话的"切换"候选：它有自己的专用会话。
+  // ★ 自带模型不进普通会话的"切换"候选：它有自己的专用会话。
   // 留一条"切换到这个模型"在这儿，用户点了会以为切好了，实际是把全局设置改了 —— 两回事。
   const items = list
     .filter((m) => m !== fbName || m === cur)
@@ -1071,8 +1076,8 @@ function openModelSelect() {
   if (fbName) {
     items.push({
       value: DEFAULT_LLM_ENTRY,
-      label: fbName + '（默认模型）',
-      desc: '兜底模型：只能用在「默认模型」专用会话里。选它会打开那个会话，不动这里正在用的模型',
+      label: fbName + '（' + DEFAULT_SESSION_LABEL + '）',
+      desc: '程序自带的那份模型：只能用在 ' + DEFAULT_SESSION_LABEL + ' 专用会话里。选它会打开那个会话，不动这里正在用的模型',
     });
   }
   openSelect('model-select', items, {
@@ -1090,9 +1095,10 @@ function openModelSelect() {
 }
 
 /**
- * 打开「默认模型」专用会话；这个项目里还没有就建一个。
- * 之所以"有就打开、没有才建"：它的定位就是**专门用默认模型的那一个选项卡**，
+ * 打开「One Harness」专用会话；这个项目里还没有就建一个。
+ * 之所以"有就打开、没有才建"：它的定位就是**专门用自带模型的那一个选项卡**，
  * 每点一次多一个同名标签的话，用户要找的就不再是"那一个"了。
+ * 三个入口都走这里（左栏底部固定项 / 新建会话菜单 / 模型下拉那一项）—— 语义必须一致。
  */
 async function openDefaultSession() {
   if (!S.projectId) { toast('先创建项目', 'err'); return null; }
@@ -1100,10 +1106,26 @@ async function openDefaultSession() {
   if (found) {
     if (found.id === S.sessionId) { toast('已经在这个会话里了'); $('input').focus(); return found; }
     await loadSession(found.id, S.projectId);
-    toast('已切到「默认模型」专用会话：它固定走兜底那份模型');
+    toast('已切到 ' + DEFAULT_SESSION_LABEL + '：它固定走程序自带的那份模型');
     return found;
   }
-  return createSession(DEFAULT_LLM_PROGRAM, '默认模型');
+  return createSession(DEFAULT_LLM_PROGRAM, DEFAULT_SESSION_LABEL);
+}
+
+/**
+ * 左栏底部那个固定入口的高亮：当前会话正是专用会话时点亮。
+ * 只改 class 与 title，不重建节点 —— 它是 HTML 里写死的常驻元素，
+ * 反复 innerHTML 会把绑在上面的 click 一起丢掉。
+ */
+function renderFootDefault() {
+  const el = $('btn-default-session');
+  if (!el) return;
+  const on = sessionUsesFallback();
+  const nm = fallbackModelName();
+  el.classList.toggle('on', on);
+  el.title = on
+    ? '当前就在 ' + DEFAULT_SESSION_LABEL + ' 专用会话里（固定走 ' + (nm || '未配置') + '）'
+    : DEFAULT_SESSION_LABEL + '：走程序自带的那份模型开聊' + (nm ? '（' + nm + '）' : '') + '，不用自己配端点';
 }
 
 // ---------------- 会话 ----------------
@@ -1401,8 +1423,8 @@ function renderTop() {
     // 「默认模型」专用会话：模型不是来自「常规」那套，而是兜底那份。
     // 这枚标签让"模型 chip 为什么显示这个"有出处 —— 否则用户会以为设置被改了。
     if (sessionUsesFallback()) {
-      add('默认模型', 'sky',
-        '本会话固定走兜底那份语言模型：' + (fallbackModelName() || '未配置') +
+      add(DEFAULT_SESSION_LABEL, 'sky',
+        '本会话固定走程序自带的那份语言模型：' + (fallbackModelName() || '未配置') +
         '\n（地址/钥匙/模型名/思考强度都在「设置 → 兜底模型 → 语言模型」里改）');
     }
     add(m.readOnly ? '只读' : '可写', m.readOnly ? 'warn' : 'mint',
@@ -2466,7 +2488,7 @@ const FALLBACK_CARDS = [
     name: '语言模型（LLM）',
     ctx: true,
     reasoning: true,
-    tip: '「常规 → 模型端点」的 Base URL 与模型名都留空时，对话就走这里；「默认模型」专用会话也固定走这里。',
+    tip: '「常规 → 模型端点」的 Base URL 与模型名都留空时，对话就走这里；' + DEFAULT_SESSION_LABEL + ' 专用会话也固定走这里。',
     note: '出厂值来自随包的 config/model.json。这几项留空 = 用出厂值。',
     saveId: 'btn-save-fb-llm',
   },
@@ -2614,11 +2636,11 @@ const SETTINGS_SECTIONS = {
       const cards = FALLBACK_CARDS.map((c) => {
         const e = fb[c.key] || {};
         // 语言模型那张只在"用户没配"时顶上；生图这张就是工具唯一的出处，永远算在用。
-        // 语言模型那张**永远**有人用：除了"常规里没填时顶上"，还有「默认模型」专用会话。
+        // 语言模型那张**永远**有人用：除了"常规里没填时顶上"，还有 One Harness 专用会话。
         // 所以它在用户在「常规」里配了端点之后也不能写"未使用" —— 那会是一句假话。
         const state = c.key === 'llm'
-          ? (ownInUse ? { cls: 'state-off', tag: '专用会话在用', why: '你在「常规」里配了自己的端点，所以普通会话走你那套；但「新建会话 → 默认模型」那个专用会话**始终**走这里。' }
-                      : { cls: 'state-on', tag: '正在生效', why: '「常规」里没配端点：普通对话和「默认模型」专用会话都走这里。' })
+          ? (ownInUse ? { cls: 'state-off', tag: '专用会话在用', why: '你在「常规」里配了自己的端点，所以普通会话走你那套；但左栏那个 ' + DEFAULT_SESSION_LABEL + ' 专用会话**始终**走这里。' }
+                      : { cls: 'state-on', tag: '正在生效', why: '「常规」里没配端点：普通对话和 ' + DEFAULT_SESSION_LABEL + ' 专用会话都走这里。' })
           : { cls: 'state-on', tag: '生图就是走它', why: 'generate_image 只有这一个端点，没有"第二套"可切。' };
         return `
         <div class="fb-card ${state.cls}">
@@ -2643,7 +2665,7 @@ const SETTINGS_SECTIONS = {
       }).join('');
       return `
         <div class="group-title">兜底模型</div>
-        <div class="hint">这两张卡是**没配置时顶上来的那套**：语言模型那张在「常规 → 模型端点」没填时顶上，生图那张则是 generate_image 工具唯一的出处。两张卡与"正在用的模型"分开存放 —— 在这儿改不会动到正在跑的那套，反之也一样（这正是"能用兜底去配置 One Harness、却不会把程序自己配死"的前提）。<br />语言模型那张还多一个去处：「新建会话」里那个<b>「默认模型」专用会话</b>始终走它（哪怕你在「常规」里配了自己的端点）—— 想在不动自己模型的前提下用兜底模型，就用那个会话。<br />每项**留空 = 用随包 config/ 里的出厂值**；想用自己的 key（例如自己去 agnes 注册领一个），填进来保存即可。</div>
+        <div class="hint">这两张卡是**没配置时顶上来的那套**：语言模型那张在「常规 → 模型端点」没填时顶上，生图那张则是 generate_image 工具唯一的出处。两张卡与"正在用的模型"分开存放 —— 在这儿改不会动到正在跑的那套，反之也一样（这正是"能用兜底去配置 One Harness、却不会把程序自己配死"的前提）。<br />语言模型那张还多一个去处：左栏底部那个<b>${DEFAULT_SESSION_LABEL}</b>固定入口（就在「设置」上方），点进去就是专用会话 —— 它始终走这里（哪怕你在「常规」里配了自己的端点）。想在不动自己模型的前提下用自带模型，就从那个入口进；「新建会话」菜单和模型下拉里也能进，说的是同一个会话。<br />每项**留空 = 用随包 config/ 里的出厂值**；想用自己的 key（例如自己去 agnes 注册领一个），填进来保存即可。</div>
         <div class="fb-cards">${cards}</div>
       `;
     },
@@ -3070,6 +3092,9 @@ function bind() {
   }
   // 左栏底部的设置入口（位置与样式照 Bionic 的左下角那个按钮）：点开是模态框，
   // 不再去动右栏——设置和右栏没关系了。
+  // 左栏底部那个固定入口：打开/新建「One Harness」专用会话（有就打开、没有才建）。
+  // 位置在设置**上方**，常驻不随项目树滚动 —— 见 index.html 的 .side-footer。
+  $('btn-default-session').onclick = () => openDefaultSession();
   $('btn-open-settings').onclick = () => openSettings();
   // 左栏收起时的兜底入口（见 index.html 的注释）：不补的话收起左栏就没法开设置了
   $('btn-open-settings-rail').onclick = () => openSettings();

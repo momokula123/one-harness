@@ -88,7 +88,7 @@ const PROGRAMS = [
   // `modelSource` 是它唯一的凭据：会话建出来时把它记进 session.modelSource，
   // 之后 agent 每轮按它把端点整组换成兜底那份（core/agent.js modelConfig）。
   // 普通会话拿不到这个值 —— sessions:update 的白名单里没有它，所以切不过去。
-  { id: 'default-llm', label: '默认模型', description: '专用会话：固定走兜底模型（随包 config/ 那份），不受「常规」里配置的端点影响；普通会话用不了这个模型', prompt: 'omni', modules: OMNI_MODULES.slice(), modelSource: 'fallback' },
+  { id: 'default-llm', label: 'One Harness', description: '专用会话：固定走程序自带的那份模型（随包 config/ 那份），不受「常规」里配置的端点影响；普通会话用不了这个模型', prompt: 'omni', modules: OMNI_MODULES.slice(), modelSource: 'fallback' },
 ];
 
 function listPrograms() {

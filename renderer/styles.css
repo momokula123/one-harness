@@ -204,6 +204,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .side-foot-row:hover { background: var(--bg-4); color: var(--text); }
 .side-foot-row .ic { color: var(--text-2); }
+/* 「One Harness」固定入口的点亮态：当前会话正是那个专用会话时。
+   刻意沿用项目树里"当前会话"的表达（.node.sub.active：强调色实底 + 白字）——
+   同一个左栏里若出现两种"选中"长相，用户会以为是两种不同的状态。 */
+.side-foot-row.on, .side-foot-row.on:hover { background: var(--accent); color: #fff; }
+.side-foot-row.on .ic { color: #fff; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 4px;

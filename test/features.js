@@ -512,10 +512,11 @@
     });
   }
 
-  // ============ O. 兜底模型：思考强度可调 + 「默认模型」专用会话 ============
-  prog("O. 兜底模型：思考强度可调 + 「默认模型」专用会话");
-  // 对应两句话：① 思考强度要在「设置 → 兜底模型」里能调；② 默认模型单独一个会话专用，
-  // 普通会话用不了它。两句都得在**界面上**有落点，所以这一段全走真实点击/真实 IPC。
+  // ============ O. 兜底模型：思考强度可调 + One Harness 专用会话 ============
+  prog("O. 兜底模型：思考强度可调 + One Harness 专用会话");
+  // 对应三句话：① 思考强度要在「设置 → 兜底模型」里能调；② 自带模型单独一个会话专用，
+  // 普通会话用不了它；③ 左栏「设置」上方要有一个**固定**入口进那个会话。
+  // 三句都得在**界面上**有落点，所以这一段全走真实点击/真实 IPC。
   {
     const ordinary = (await api.sessions.list(proj.id)).find((s) => s.programId !== 'default-llm');
     await loadSession(ordinary.id);
@@ -569,9 +570,9 @@
     showNewSessionMenu();
     await wait(300);
     const menuItems = [...document.querySelectorAll('#new-session-menu .pop-item')];
-    check('O7 「新建会话」里有「默认模型（专用会话）」这一项',
-      menuItems.some((e) => e.innerText.includes('默认模型')), JSON.stringify(menuItems.map((e) => e.innerText.trim())));
-    menuItems.find((e) => e.innerText.includes('默认模型')).click();
+    check('O7 「新建会话」里有「One Harness（专用会话）」这一项',
+      menuItems.some((e) => e.innerText.includes('One Harness')), JSON.stringify(menuItems.map((e) => e.innerText.trim())));
+    menuItems.find((e) => e.innerText.includes('One Harness')).click();
     await wait(1500);
 
     const list2 = await api.sessions.list(proj.id);
@@ -584,8 +585,8 @@
       (loadedPin.session || {}).modelSource === 'fallback', JSON.stringify((loadedPin.session || {}).modelSource));
     check('O11 界面上模型 chip 显示的是兜底那份模型',
       $id('model-name').textContent === fbName, $id('model-name').textContent);
-    check('O12 顶栏有「默认模型」这枚标签，说明这个模型是从哪儿来的',
-      $id('session-pills').innerText.includes('默认模型'), $id('session-pills').innerText);
+    check('O12 顶栏有「One Harness」这枚标签，说明这个模型是从哪儿来的',
+      $id('session-pills').innerText.includes('One Harness'), $id('session-pills').innerText);
 
     // ---- O13/O14 专用会话里模型是锁死的；同一动作在普通会话里必须是有反应的 ----
     $id('model-select').click();
@@ -604,6 +605,34 @@
     closeSelect();
     check('O14 反向对照：同样一次点击在普通会话里是**会**弹的 —— 证明 O13 不是探针失灵',
       ownHasPop, popInOwn && popInOwn.className);
+    await wait(300);
+
+    // ---- O15~O20 左栏底部那个固定入口（用户要求：固定在「设置」上方，常驻） ----
+    // 这一组测的是"入口本身"，和 O7~O12 那条菜单路径是两个入口、同一件事 ——
+    // 所以这里既能验它真的通，也能验"有就打开、不再多建一个"这条语义。
+    const foot = $id('btn-default-session');
+    check('O15 ★ 左栏底部有固定的 One Harness 入口', !!foot, foot ? '' : '没找到 #btn-default-session');
+    check('O16 它就在「设置」的**上方**，两者同级',
+      !!foot && !!$id('btn-open-settings') &&
+        foot.parentElement === $id('btn-open-settings').parentElement &&
+        !!(foot.compareDocumentPosition($id('btn-open-settings')) & Node.DOCUMENT_POSITION_FOLLOWING),
+      foot && foot.className);
+    check('O17 此刻在普通会话里，它是未点亮态', !!foot && !foot.classList.contains('on'), foot && foot.className);
+
+    const sessBefore3 = (await api.sessions.list(proj.id)).length;
+    foot.click();
+    await wait(1200);
+    const list3 = await api.sessions.list(proj.id);
+    check('O18 ★ 点它就是进专用会话，且**不会**每点一次多建一个（有就打开）',
+      !!S.session && S.session.modelSource === 'fallback' && list3.length === sessBefore3,
+      { modelSource: S.session && S.session.modelSource, before: sessBefore3, after: list3.length });
+    check('O19 进去之后这个入口点亮了（表示"当前就在它里面"）',
+      foot.classList.contains('on'), foot.className);
+
+    await loadSession(ordinary.id);
+    await wait(400);
+    check('O20 反向对照：回到普通会话后它又灭了 —— 证明 O19 不是"一直是 on"',
+      !foot.classList.contains('on'), foot.className);
     await wait(300);
   }
 
