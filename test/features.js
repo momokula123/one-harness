@@ -702,7 +702,7 @@
     let last = rows[rows.length - 1];
     check('O25 ★ 「配置自定义模型」在对话里回一条**助手样式**的消息（不是灰底系统条）',
       rows.length === rowsBefore + 1 && !!last && last.classList.contains('assistant') &&
-        !!last.querySelector('.meta') && last.textContent.includes('要配置自定义模型 请前往[设置]-[常规]里填写'),
+        !!last.querySelector('.meta') && last.textContent.includes('自定义模型在「设置 → 常规」里填'),
       last ? last.textContent.slice(0, 60) : '(没有新行)');
 
     $id('ct-draw').click();
@@ -711,7 +711,7 @@
     last = rows[rows.length - 1];
     check('O26 ★ 「绘图」也在对话里回一条助手样式的消息，文案指路',
       rows.length === rowsBefore + 2 && !!last && last.classList.contains('assistant') &&
-        last.textContent.includes('生图您可以跟我说如下方式') &&
+        last.textContent.includes('可以对我说') &&
         last.textContent.includes('帮我生成一个海边的小狗 4K 16:9'),
       last ? last.textContent.slice(0, 80) : '(没有新行)');
 

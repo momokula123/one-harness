@@ -981,6 +981,39 @@ function registerIpc() {
       return { ok: false, error: msg };
     }
   });
+  // 剪贴板粘贴的图：跟拖拽的 File 不同，剪贴板里的图**没有本地地址**（webUtils 也问不到），
+  // 渲染层手里只有字节 —— 由主进程落进会话工作目录，与 files:attach 同一条"先进工作目录"的规矩。
+  ipcMain.handle('files:paste-image', (_e, { projectId, sessionId, name, base64 }) => {
+    try {
+      const s = loadSession(projectId, sessionId);
+      const root = s.workingDir;
+      if (!root) return { ok: false, error: '这个会话没有工作目录，先在项目里选一个文件夹' };
+      const buf = Buffer.from(String(base64 || ''), 'base64');
+      if (!buf.length) return { ok: false, error: '剪贴板里没有图片数据' };
+      const base = String(name || '').replace(/[\\/:*?"<>|]/g, '-').trim();
+      const ext = path.extname(base) || '.png';
+      const stem = path.basename(base, ext) || 'clipboard';
+      store.ensureDir(root);
+      const dest = store.uniquePath(root, stem, ext);
+      fs.writeFileSync(dest, buf);
+      const rel = path.relative(root, dest).split(path.sep).join('/');
+      runlog.log('file.paste', { sessionId, to: dest, bytes: buf.length });
+      const info = images.isImage(dest) ? images.inspect(dest) : null;
+      return {
+        ok: true, rel, name: path.basename(dest), copied: true, bytes: buf.length,
+        image: info ? {
+          ok: info.ok, error: info.ok ? null : info.error,
+          width: info.width || null, height: info.height || null,
+          tokens: info.tokens || 0, oversize: !!info.oversize,
+        } : null,
+      };
+    } catch (e) {
+      const msg = e.code === 'EPERM' || e.code === 'EACCES' ? '没权限写入（工作目录不可写）'
+        : e.code === 'ENOSPC' ? '磁盘空间不够'
+        : (e.message || String(e));
+      return { ok: false, error: msg };
+    }
+  });
   // 对话里的缩略图是**给人看的**，上限比"喂给模型"那条（core/images.js 的 10MB）宽：
   // 生图 4K 实测就有 5248×2944 / 11.4MB 的 PNG —— 卡在 10MB 上，用户生成完图在对话里
   // 看到的只会是「图片打不开」。模型输入那条**没有**放开，仍按 10MB 判。

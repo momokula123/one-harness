@@ -477,9 +477,9 @@ async function init() {
   setInterval(refreshFilesIfIdle, 4000);
 
   if (!ml.ok) {
-    showBanner('连不上模型端点：' + ml.error + ' —— 确认这个地址上的服务在跑，或到设置里改 Base URL。', '去设置', () => switchPanel('settings'));
+    showBanner('连不上模型端点：' + ml.error, '去设置', () => switchPanel('settings'));
   } else if (!S.models.length) {
-    showBanner('模型端点已连通，但一个模型都没列出来。确认服务侧已经拉起模型（要支持工具调用）。', '去设置', () => switchPanel('settings'));
+    showBanner('端点已连通，但没有列出模型（模型需支持工具调用）', '去设置', () => switchPanel('settings'));
   }
   console.log('HATCH_RENDERER_READY sessions=' + S.sessions.length + ' programs=' + S.programs.length + ' tools=' + S.catalog.length + ' models=' + S.models.length + ' skills=' + S.skills.length);
 }
@@ -1065,8 +1065,7 @@ function openModelSelect() {
   // "在 One Harness 里打开了还让我新建会话啥意思？" —— 他要换的是自带那份模型，
   // 那就该把他送到「设置 → 兜底模型」，而不是让他去开新会话。
   if (sessionUsesFallback()) {
-    toast('这是 ' + DEFAULT_SESSION_LABEL + ' 会话：模型固定用程序自带的那份。已打开「设置 → 兜底模型」，换模型在那一张卡里改');
-    openSettings('fallback');
+    toast(DEFAULT_SESSION_LABEL + ' 会话固定用自带模型，换模型去设置 → 兜底模型');
     return;
   }
   const cur = currentModelName();
@@ -1132,7 +1131,7 @@ async function openDefaultSession() {
   if (found) {
     if (found.id === S.sessionId) { toast('已经在这个会话里了'); $('input').focus(); return found; }
     await loadSession(found.id, S.projectId);
-    toast('已切到 ' + DEFAULT_SESSION_LABEL + '：它固定走程序自带的那份模型');
+    toast('已切到 ' + DEFAULT_SESSION_LABEL);
     return found;
   }
   return createSession(DEFAULT_LLM_PROGRAM, DEFAULT_SESSION_LABEL);
@@ -1468,8 +1467,7 @@ function renderTop() {
     // 这枚标签让"模型 chip 为什么显示这个"有出处 —— 否则用户会以为设置被改了。
     if (sessionUsesFallback()) {
       add(DEFAULT_SESSION_LABEL, 'sky',
-        '本会话固定走程序自带的那份语言模型：' + (fallbackModelName() || '未配置') +
-        '\n（地址/钥匙/模型名/思考强度都在「设置 → 兜底模型 → 语言模型」里改）');
+        '自带模型：' + (fallbackModelName() || '未配置') + '（在设置 → 兜底模型里改）');
     }
     add(m.readOnly ? '只读' : '可写', m.readOnly ? 'warn' : 'mint',
       m.readOnly ? '本会话只读：可以读文件，不允许改动' : '本会话可写：允许改文件、执行命令');
@@ -1706,6 +1704,15 @@ function imageChips(pics) {
   }).join('');
 }
 
+// 写给模型的注释行（生图工具结果末尾那句「你（模型）看不到这张图」）只该喂给模型，
+// 不该显示给用户 —— 会话记录里的原文一行不动（历史会话同样受益），这里只在渲染时滤掉。
+// 判定按行首匹配，注释文案在 core/tools/image.js 里拼装时永远以「**你（模型）」开头。
+function stripModelNotes(text) {
+  const lines = String(text || '').split('\n').filter((l) => !/^\*\*你（模型）/.test(l));
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.join('\n');
+}
+
 function toolCard(call, result) {
   const wrap = document.createElement('div');
   const status = !result ? (S.running ? 'run' : 'wait') : result.isError ? 'err' : 'ok';
@@ -1735,7 +1742,7 @@ function toolCard(call, result) {
   body.className = 'tool-body';
   body.innerHTML =
     `<div class="label">参数</div><div class="tool-args">${esc(args)}</div>` +
-    (result ? `<div class="label">结果${result.isError ? '（失败）' : ''}</div><pre class="out">${esc(result.text || '')}</pre>` : `<div class="label">等待结果…</div>`);
+    (result ? `<div class="label">结果${result.isError ? '（失败）' : ''}</div><pre class="out">${esc(stripModelNotes(result.text))}</pre>` : `<div class="label">等待结果…</div>`);
   // 闸门决定：谁放行的、评审三轴怎么判的（持久化在会话里，刷新后还在）。
   // 只在「拦下来了」或「过了评审」时才显示——普通只读调用每条都挂个"放行"太吵。
   const dec = result && result.decision;
@@ -1997,6 +2004,56 @@ async function attachFiles(fileList) {
       it.state = 'bad';
       it.note = (r && r.error) || '复制失败';
       it.from = it.note + '（源文件：' + abs + '）';
+    }
+    renderAtts();
+  }
+}
+
+// ---------------- 粘贴进来的附件（剪贴板截图） ----------------
+// 剪贴板里的图**没有本地地址**（跟拖拽的 File 不同，webUtils 也问不到），
+// 只能把字节经 IPC 交给主进程落进工作目录 —— 之后与拖入的附件走完全同一条路。
+async function attachClipboardImages(clipItems) {
+  if (!S.sessionId || !S.projectId) { toast('先打开一个会话，再粘贴图片', 'err'); return; }
+  const imgs = [...(clipItems || [])].filter((t) => t.kind === 'file' && /^image\//.test(t.type));
+  if (!imgs.length) return;
+  const jobs = imgs.map((t) => {
+    const ext = (String(t.type).split('/')[1] || 'png').replace('jpeg', 'jpg');
+    const it = { key: 'att-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: '剪贴板图片.' + ext, state: 'busy' };
+    S.atts.push(it);
+    return { it, blob: t.getAsFile(), ext };
+  });
+  renderAtts();
+  for (const { it, blob, ext } of jobs) {
+    let b64 = '';
+    try {
+      b64 = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result || '').split(',')[1] || '');
+        fr.onerror = () => rej(new Error('读不到剪贴板数据'));
+        fr.readAsDataURL(blob);
+      });
+    } catch (e) {
+      it.state = 'bad';
+      it.note = e.message;
+      renderAtts();
+      continue;
+    }
+    let r;
+    try {
+      r = await api.files.pasteImage({ projectId: S.projectId, sessionId: S.sessionId, name: '剪贴板图片.' + ext, base64: b64 });
+    } catch (e) {
+      r = { ok: false, error: e.message };
+    }
+    if (r && r.ok) {
+      it.state = 'ok';
+      it.rel = r.rel;
+      it.name = r.name;
+      it.copied = r.copied;
+      it.bytes = r.bytes;
+      it.image = r.image || null;
+    } else {
+      it.state = 'bad';
+      it.note = (r && r.error) || '粘贴失败';
     }
     renderAtts();
   }
@@ -2575,7 +2632,7 @@ const FALLBACK_CARDS = [
     name: '语言模型',
     ctx: true,
     reasoning: true,
-    tip: '「常规」里没配端点时，对话走这里；' + DEFAULT_SESSION_LABEL + ' 专用会话固定走这里。',
+    tip: '「常规」没配端点时顶上；' + DEFAULT_SESSION_LABEL + ' 会话固定用它。',
     note: '留空 = 用出厂值',
     saveId: 'btn-save-fb-llm',
   },
@@ -2626,17 +2683,18 @@ const SETTINGS_SECTIONS = {
         <div class="group-title">模型端点</div>
         <div class="field"><label>Base URL</label><input id="set-baseUrl" value="${esc(own.baseUrl)}" placeholder="留空 = 用兜底模型" /></div>
         <div class="field"><label>API Key</label><input id="set-apiKey" value="${esc(own.apiKey)}" /></div>
-        <div class="field"><label>模型</label><input id="set-model" value="${esc(own.model)}" list="model-options" placeholder="留空 = 用兜底模型" /></div>
-        <datalist id="model-options">${(S.models || []).map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+        <div class="field"><label>模型</label>
+          <div class="row-inline"><input id="set-model" value="${esc(own.model)}" placeholder="留空 = 用兜底模型" /><button id="set-model-pick" type="button" class="ghost" aria-haspopup="listbox" title="从已拉取的模型里选"><span class="ic" data-ic="chevron"></span></button></div>
+        </div>
         <div class="field">
           <label class="chk"><input type="checkbox" id="set-vision"${s.model.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
-          <div class="hint">勾上之后，拖进输入框的图片会随消息一起交给模型。端点不会告诉程序"这个模型能不能看图"（/v1/models 只回 id），所以只能在这里声明。勾错了也不至于卡死：程序会剥掉图按纯文本重发一次，并提示你来这里取消勾选。</div>
+          <div class="hint">勾上后，拖进输入框的图片会随消息发给模型。端点不回报模型是否支持看图，只能在此声明；勾错程序会自动按纯文本重发。</div>
         </div>
         <div class="row-inline field">
           <div><label>温度</label><input id="set-temp" type="number" step="0.1" min="0" max="2" value="${esc(s.model.temperature)}" /></div>
           <div><label>上下文长度</label><input id="set-ctx" type="number" step="1024" value="${esc(s.model.contextLength)}" /></div>
         </div>
-        <div class="hint">上下文长度只影响「什么时候自动压缩」和界面上的占用条，不影响请求本身。框里显示的就是<b>当前生效</b>的那个数${usingFallback ? `（现在走兜底模型，所以它是兜底那份自带的；想改到别处请去「兜底模型 → 语言模型」）` : ''}；在这填了别的数，就按你填的算。</div>
+        <div class="hint">只影响自动压缩阈值和占用条。框里是当前生效值，填了就按你填的算。</div>
         <div class="row-inline">
           <button id="btn-test">拉取模型列表</button>
           <button id="btn-save-general" class="primary">保存并应用</button>
@@ -2651,7 +2709,7 @@ const SETTINGS_SECTIONS = {
           <button id="btn-export-index">导出工程索引</button>
           <button id="btn-import-index" class="ghost">导入工程索引</button>
         </div>
-        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。索引只是指针（id / 名字 / 工程文件夹地址），对话记录不在索引里 —— 它就在工程文件夹的 .one-harness 下，跟着文件夹走。</div>
+        <div class="hint">当前索引里有 ${(S.projects || []).length} 个工程。索引只是指针，对话记录存在工程文件夹的 .one-harness 里，跟着文件夹走。</div>
         <div class="hint">导入只增不减：同一个工程会被跳过，本机已有的名字与工作目录不会被备份里的旧值覆盖。</div>
       `;
     },
@@ -2693,6 +2751,21 @@ const SETTINGS_SECTIONS = {
           toast('连接失败：' + ml.error, 'err');
         }
       });
+      // 模型下拉：用对话顶栏那套自定义下拉（openSelect），每次点开都从 S.models 现渲染。
+      // 原生 <datalist> 是坏下拉：框里有字就只显示"匹配当前文字"的项，还会混浏览器历史，
+      // 拉取再成功用户看到的也是旧样子。输入框本身点了也弹（用户要求：点框即出下拉）。
+      const pickGeneral = (trigger) => {
+        const cur = $('set-model').value.trim();
+        if (!(S.models || []).length) { toast('还没拉到模型——先点「拉取模型列表」', 'err'); return; }
+        openSelect(trigger, S.models.map((m) => ({ value: m, label: m, desc: m === cur ? '当前填的' : '' })), {
+          value: cur,
+          width: 320,
+          onPick: (v) => { $('set-model').value = v; },
+        });
+      };
+      on('set-model-pick', () => pickGeneral('set-model-pick'));
+      const gmInput = $('set-model');
+      if (gmInput) gmInput.onclick = () => pickGeneral(gmInput);
       on('btn-save-general', async () => {
         S.settings = await api.settings.save({
           model: {
@@ -2735,7 +2808,8 @@ const SETTINGS_SECTIONS = {
           <div class="hint">${esc(state.why ? c.tip + ' ' + state.why : c.tip)}</div>
           <div class="field"><label>Base URL</label><input id="fb-${c.key}-baseUrl" value="${esc(e.baseUrl)}" /></div>
           <div class="field"><label>API Key</label><input id="fb-${c.key}-apiKey" value="${esc(e.apiKey)}" /></div>
-          <div class="field"><label>模型</label><input id="fb-${c.key}-model" value="${esc(e.model)}"${c.ctx ? ' list="model-options"' : ''} /></div>
+          <div class="field"><label>模型</label><input id="fb-${c.key}-model" value="${esc(e.model)}" />
+            <div class="row-inline"><button id="fb-${c.key}-fetch" type="button">拉取该端点的模型</button><button id="fb-${c.key}-pick" type="button" class="ghost" aria-haspopup="listbox" title="从已拉取的模型里选"><span class="ic" data-ic="chevron"></span></button></div></div>
           ${c.ctx ? `<div class="field"><label>上下文长度</label><input id="fb-${c.key}-ctx" type="number" step="1024" value="${esc(e.contextLength)}" placeholder="留空 = 用出厂值" /><div class="hint">决定自动压缩的阈值与界面上的占用条。</div></div>` : ''}
           ${c.reasoning ? `<div class="field"><label>思考强度</label>
             <button id="fb-${c.key}-reasoning" class="sel-trigger" aria-haspopup="listbox" aria-expanded="false" data-v="${esc(e.reasoning || '')}"><span class="sel-label">${esc(reasoningLabelOf(e.reasoning))}</span><span class="ic" data-ic="chevron"></span></button>
@@ -2755,6 +2829,43 @@ const SETTINGS_SECTIONS = {
     },
     bind() {
       for (const c of FALLBACK_CARDS) {
+        // 拉取模型：**按这张卡片自己填的端点**去拉（兜底端点和「常规」往往是两回事，
+        // 比如这里填 deepseek、常规填 agnes —— 引用常规的清单永远给不出 deepseek 的模型）
+        const fbtn = $('fb-' + c.key + '-fetch');
+        if (fbtn) fbtn.onclick = async () => {
+          fbtn.disabled = true;
+          try {
+            const ml = await api.models.list({
+              baseUrl: $('fb-' + c.key + '-baseUrl').value.trim(),
+              apiKey: $('fb-' + c.key + '-apiKey').value.trim(),
+            });
+            if (ml.ok) {
+              S.fbModels = S.fbModels || {};
+              S.fbModels[c.key] = ml.models;
+              toast('连通，共 ' + ml.models.length + ' 个模型', 'ok');
+            } else {
+              toast('连接失败：' + ml.error, 'err');
+            }
+          } finally {
+            fbtn.disabled = false;
+          }
+        };
+        // 下拉同样走 openSelect（理由同「常规」那段），数据是**这张卡自己拉来的**；
+        // 点 ▾ 或点输入框本身都弹
+        const pbtn = $('fb-' + c.key + '-pick');
+        const openFbPick = (trigger) => {
+          const list = (S.fbModels && S.fbModels[c.key]) || [];
+          if (!list.length) { toast('先点「拉取该端点的模型」', 'err'); return; }
+          const cur = $('fb-' + c.key + '-model').value.trim();
+          openSelect(trigger, list.map((m) => ({ value: m, label: m, desc: m === cur ? '当前填的' : '' })), {
+            value: cur,
+            width: 320,
+            onPick: (v) => { $('fb-' + c.key + '-model').value = v; },
+          });
+        };
+        if (pbtn) pbtn.onclick = () => openFbPick(pbtn);
+        const minp = $('fb-' + c.key + '-model');
+        if (minp) minp.onclick = () => openFbPick(minp);
         // 思考强度：下拉选项**由内核下发的取值表**现拼（见 S.reasoningLevels 的说明），
         // 前面加一档"跟出厂值"（空串）—— 空串会存成空串，于是将来改 config/model.json 还能跟着走。
         if (c.reasoning) {
@@ -2883,7 +2994,7 @@ const SETTINGS_SECTIONS = {
         </div>
         <div class="field"><label>评审用模型（留空 = 与主模型相同）</label><input id="set-reviewer" value="${esc(s.approval.reviewerModel)}" /></div>
         <div class="row-inline"><button id="btn-save-approval" class="primary">保存</button></div>
-        <div class="hint">顶栏输入框旁边那个盾牌只改「当前会话」；这里改的是「新会话的默认值」，已经开着的会话不受影响。</div>
+        <div class="hint">盾牌只改当前会话；这里改的是新会话的默认值。</div>
 
         <div class="group-title">当前会话</div>
         <div class="field"><label>工作目录</label>
@@ -3010,7 +3121,7 @@ const SETTINGS_SECTIONS = {
         <div class="field"><label>Shell</label><input id="set-shell" value="${esc(s.shell.shellPath)}" /></div>
         <div class="field"><label>联网搜索端点（SearxNG JSON API）</label><input id="set-search" value="${esc(s.web.searchEndpoint)}" placeholder="例如 http://127.0.0.1:8888" /></div>
         <div class="row-inline"><button id="btn-save-tools" class="primary">保存</button></div>
-        <div class="hint">Bionic 的正式版会把这个分区藏起来（只在内部构建里显示），我们保留，因为 Shell 路径是这里唯一能改的地方。</div>
+        <div class="hint">Shell 路径只有这里能改。</div>
       `;
     },
     bind() {
@@ -3184,8 +3295,8 @@ function bind() {
   // 位置在设置**上方**，常驻不随项目树滚动 —— 见 index.html 的 .side-footer。
   $('btn-default-session').onclick = () => openDefaultSession();
   // 专用会话里那两个浮动按钮
-  $('ct-config-model').onclick = () => pushNotice('要配置自定义模型 请前往[设置]-[常规]里填写');
-  $('ct-draw').onclick = () => pushNotice('生图您可以跟我说如下方式：“帮我生成一个海边的小狗 4K 16:9”');
+  $('ct-config-model').onclick = () => pushNotice('自定义模型在「设置 → 常规」里填');
+  $('ct-draw').onclick = () => pushNotice('可以对我说："帮我生成一个海边的小狗 4K 16:9"');
   $('btn-open-settings').onclick = () => openSettings();
   // 左栏收起时的兜底入口（见 index.html 的注释）：不补的话收起左栏就没法开设置了
   $('btn-open-settings-rail').onclick = () => openSettings();
@@ -3216,6 +3327,15 @@ function bind() {
 
   // 拖进来的文件：整个窗口接住 drag/drop，但落在输入框里才算附件（见 bindDrops）
   bindDrops();
+  // 粘贴：剪贴板里有图就接住当附件（截图后直接 Ctrl+V）；纯文本照走系统默认粘贴
+  $('input').addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const hasImg = [...items].some((t) => t.kind === 'file' && /^image\//.test(t.type));
+    if (!hasImg) return;
+    e.preventDefault();
+    attachClipboardImages(items);
+  });
   $('composer-atts').addEventListener('click', (e) => {
     const b = e.target.closest('[data-att-drop]');
     if (b) removeAtt(b.getAttribute('data-att-drop'));

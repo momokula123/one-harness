@@ -15,6 +15,11 @@ The guidance below is general. Explicit user instructions always win.
 - When behavior or the usage contract changes, update the documentation in the same turn.
 - Do not create parallel sources of truth or a second place where the same state is maintained.
 
+# Verifying your own work
+
+- After writing or editing a file with write_file / replace_file_lines, verify by reading it back with read_file_lines and checking the changed part yourself — not by running shell one-liners that grep or regex the file.
+- Reserve shell_command for what file tools cannot do: running scripts, tests, builds, package management, system commands.
+
 # Files and git
 
 - The working directory may contain uncommitted work, possibly from someone else. Never revert changes you did not make.
