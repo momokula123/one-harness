@@ -1088,8 +1088,21 @@ function openModelSelect() {
     value: cur,
     width: 256,               // Bionic 的 md 档（16rem）：模型名字长，别跟着 chip 宽度挤
     onPick: async (v) => {
-      S.settings = await api.settings.save({ model: { model: v } });
-      if (S.session) await api.sessions.update({ projectId: S.projectId, sessionId: S.sessionId, patch: { model: { model: v } } });
+      // 写回哪一侧，必须跟 main.js resolveModel() 同一条规则：正在用的是用户自己那组
+      // （baseUrl 与模型名都在，store.hasOwnEndpoint 同判）→ 写 model；正在用的是兜底
+      // → 写兜底。以前这里一律写 model：骑着兜底端点时这个名字在读取时被兜底整组覆盖，
+      // chip 永远显示 agnes（「不能换模型了」）；而下面那行会话级 patch 却真的把所选
+      // 模型发了出去 —— 界面与请求各说各话（实测：chip 是 agnes，请求却 503 无可用渠道）。
+      const own = S.settings.modelOwn || {};
+      const ownInUse = !!(String(own.baseUrl || '').trim() && String(own.model || '').trim());
+      S.settings = await api.settings.save(ownInUse ? { model: { model: v } } : { fallback: { llm: { model: v } } });
+      // 顶栏下拉的语义是「全局切换」，不是会话级覆盖 —— session.model 一律清空。
+      // 老版本这条 bug 曾往会话里写过 {model:'…'} 残留，清掉后那个会话立刻自愈，
+      // 不再背着界面上看不见的模型名发请求。supportsVision 走全局设置，不在这里。
+      if (S.session) {
+        const r = await api.sessions.update({ projectId: S.projectId, sessionId: S.sessionId, patch: { model: null } });
+        if (r && r.meta) S.meta = r.meta;
+      }
       renderModelSelect();
       renderSettingsModal();
       toast('模型已切换为 ' + v, 'ok');

@@ -1,7 +1,7 @@
 {
   "name": "one-harness",
   "productName": "One Harness",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "description": "One Harness —— 风远偕来，途遥共赴 · local-first agent harness for open models (desktop)",
   "main": "main.js",
