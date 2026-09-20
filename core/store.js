@@ -114,6 +114,12 @@ const DEFAULT_SETTINGS = {
     theme: 'dark',
     inlineDiff: true,
   },
+  skills: {
+    // 默认分层：常驻（intro）全部直接启用 —— 全文进系统提示，前缀稳定 KV 缓存才命中；
+    // 按需（outro）默认停用，用户启用后只进"一行索引"，模型判断相关再 read_skill 读全文。
+    introDisabled: [],         // 用户手动停掉的常驻技能名（小写）
+    outroEnabled: [],          // 用户手动启用的按需技能名（小写）
+  },
 };
 
 function ensureDir(dir) {

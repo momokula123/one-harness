@@ -38,7 +38,17 @@ function parseFrontmatter(text) {
   return { meta, body: String(text || '').slice(m[0].length) };
 }
 
+// 启停状态：常驻（intro）默认启用，用户可点名停（introDisabled）；按需（outro）默认停用，
+// 用户点名启用（outroEnabled）后只进索引。名单都存 settings.skills（小写名字）。
+// 每轮组装提示时现读 settings —— 卡片上点了启/停，下一条消息立刻生效，不用重启。
+function skillFlags() {
+  const sk = (store.getSettings() || {}).skills || {};
+  const toSet = (v) => new Set((Array.isArray(v) ? v : []).map((n) => String(n).toLowerCase()));
+  return { introOff: toSet(sk.introDisabled), outroOn: toSet(sk.outroEnabled) };
+}
+
 function listSkills() {
+  const { introOff, outroOn } = skillFlags();
   const out = [];
   const seen = new Set();
   for (const src of skillSources()) {
@@ -62,6 +72,7 @@ function listSkills() {
         userInvocable: parsed.meta['user-invocable'] !== 'false',
         tier: src.tier,
         source: src.source || 'user',
+        enabled: src.tier === 'intro' ? !introOff.has(key) : outroOn.has(key),
         path: file,
         dir: path.dirname(file),
       });
@@ -72,19 +83,16 @@ function listSkills() {
 
 function findSkill(name) {
   const key = String(name || '').toLowerCase();
-  return listSkills().find((s) => s.name.toLowerCase() === key || path.basename(path.dirname(s.path)).toLowerCase() === key) || null;
+  return listSkills().find((s) => s.enabled && (s.name.toLowerCase() === key || path.basename(path.dirname(s.path)).toLowerCase() === key)) || null;
 }
 
-// intro 层常驻正文的总预算（字符）。超出预算的技能自动降级为"只留标题 + 提示"，
-// 避免技能库自己把上下文吃光。
-const INTRO_MAX_CHARS = 24000;
-
-// 注入系统提示的常驻正文（intro 层全文）
+// 注入系统提示的常驻正文（intro 层全文）。停用的技能不进来。
+// 体量由用户在技能卡片上手动启停来控制，**不做自动预算降级** —— 自动降级会让
+// 系统提示前缀在轮与轮之间悄悄变化，KV 缓存直接失效，比长一点亏得多。
 function introText() {
-  const list = listSkills().filter((s) => s.tier === 'intro');
+  const list = listSkills().filter((s) => s.tier === 'intro' && s.enabled);
   if (!list.length) return null;
   const parts = [];
-  let used = 0;
   for (const s of list) {
     let body = '';
     try {
@@ -93,13 +101,7 @@ function introText() {
       continue;
     }
     if (!body) continue;
-    const head = `## ${s.name}`;
-    if (used + body.length > INTRO_MAX_CHARS) {
-      parts.push(`${head}\n(本条超出常驻预算，需要时用 read_skill 读取全文)`);
-      continue;
-    }
-    used += body.length;
-    parts.push(`${head}\n${body}`);
+    parts.push(`## ${s.name}\n${body}`);
   }
   if (!parts.length) return null;
   return (
@@ -109,9 +111,9 @@ function introText() {
   );
 }
 
-// 注入系统提示的索引（outro 层：只有名字 + 一句话描述）
+// 注入系统提示的索引（outro 层：只有名字 + 一句话描述）。停用的技能不进索引。
 function skillsIndex() {
-  const all = listSkills().filter((s) => s.tier === 'outro');
+  const all = listSkills().filter((s) => s.tier === 'outro' && s.enabled);
   if (!all.length) return null;
   return (
     '# Skills — on demand\n' +
@@ -133,8 +135,8 @@ const listSkillsTool = {
   description: 'List the available skills (reusable procedures) with their names and descriptions.',
   parameters: { type: 'object', properties: {}, required: [] },
   async run() {
-    const all = listSkills();
-    if (!all.length) return '当前没有任何技能。可以在「技能」面板里新建一个。';
+    const all = listSkills().filter((s) => s.enabled);
+    if (!all.length) return '当前没有启用中的技能（停用的不算）。可以在「技能」面板里启用或新建。';
     return all
       .map((s) => `- ${s.name}（${s.displayName}）[${s.tier === 'intro' ? '已常驻' : '按需'}]：${s.description || '(无描述)'}\n  路径：${s.path}`)
       .join('\n');

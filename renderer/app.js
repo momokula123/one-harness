@@ -3169,11 +3169,12 @@ const SETTINGS_SECTIONS = {
       const intro = all.filter((s) => s.tier === 'intro');
       const outro = all.filter((s) => s.tier !== 'intro');
       const card = (s) => `
-        <div class="skill-card">
+        <div class="skill-card${s.enabled === false ? ' off' : ''}">
           <div class="skill-card-top">
             <span class="skill-card-name">${esc(s.name)}</span>
             <span class="pill ${s.tier === 'intro' ? 'mint' : 'warn'}">${s.tier === 'intro' ? '常驻' : '按需'}</span>
             <span class="pill sky">${s.source === 'builtin' ? '随包' : '自装'}</span>
+            <button class="ghost skill-card-btn" data-skill-toggle="${esc(s.name)}">${s.enabled === false ? '启用' : '停用'}</button>
             <button class="ghost skill-card-btn" data-skill-view="${esc(s.name)}">查看</button>
           </div>
           <div class="skill-card-desc">${esc(s.description || '这份 SKILL.md 没有写 description。')}</div>
@@ -3183,8 +3184,11 @@ const SETTINGS_SECTIONS = {
         <div class="group-title">${title} · ${arr.length} 个</div>
         <div class="hint" style="margin:-3px 0 9px">${note}</div>
         <div class="skill-cards">${arr.map(card).join('')}</div>` : '');
+      const onOutro = outro.filter((s) => s.enabled).length;
+      const offCount = all.filter((s) => s.enabled === false).length;
+      const offNote = offCount ? `停用 ${offCount} 个。` : '';
       return `
-        <div class="hint" style="margin-top:0">技能 = 技能目录里的一个文件夹，里面一份 SKILL.md。当前共 ${all.length} 个 —— 常驻 ${intro.length}、按需 ${outro.length}。</div>
+        <div class="hint" style="margin-top:0">常驻 ${intro.length} 个默认直接进上下文（前缀稳定，KV 缓存才命中）；按需 ${outro.length} 个默认停用，启用的 ${onOutro} 个只进一行索引。启停实时生效。${offNote}</div>
         ${group('常驻', '正文每轮都进系统提示，只该放"必须一直遵守"的规范。', intro)}
         ${group('按需', '系统提示里只给名字与一句话描述；模型判断相关后自己用 read_skill 读全文。', outro)}
         <div class="row-inline" style="margin-top:16px"><button id="btn-open-skills-dir" class="ghost">打开技能目录</button></div>
@@ -3192,6 +3196,25 @@ const SETTINGS_SECTIONS = {
     },
     bind() {
       on('btn-open-skills-dir', () => api.skills.openDir());
+      // 启停开关：常驻卡写 settings.skills.introDisabled（默认启用，点名停），
+      // 按需卡写 settings.skills.outroEnabled（默认停用，点名启用）。内核每轮现读 settings，
+      // 点完下一条消息立即生效；名单按小写匹配。
+      for (const b of document.querySelectorAll('[data-skill-toggle]')) {
+        b.onclick = async () => {
+          const name = b.dataset.skillToggle;
+          const cur = (S.skills || []).find((s) => s.name === name);
+          if (!cur) return;
+          const sk = ((S.settings || {}).skills || {});
+          const key = String(name).toLowerCase();
+          const listName = cur.tier === 'intro' ? 'introDisabled' : 'outroEnabled';
+          const set = new Set(Array.isArray(sk[listName]) ? sk[listName] : []);
+          if (set.has(key)) set.delete(key); else set.add(key);
+          S.settings = await api.settings.save({ skills: { [listName]: [...set] } });
+          S.skills = await api.skills.list();
+          renderSkillsPanel();
+          toast((cur.enabled ? '已停用：' : '已启用：') + name, 'ok');
+        };
+      }
       for (const b of document.querySelectorAll('[data-skill-view]')) {
         b.onclick = async () => {
           const name = b.dataset.skillView;

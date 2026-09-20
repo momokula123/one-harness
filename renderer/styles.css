@@ -342,6 +342,8 @@ pre { margin: 0; }
 .md { line-height: 1.7; }
 /* KaTeX 公式：块级公式过宽时自己横向滚，别撑破气泡 */
 .md .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+/* 停用的技能卡：整体压暗，一眼分出启用/停用 */
+.skill-card.off { opacity: 0.55; }
 .md h1, .md h2, .md h3 { margin: 18px 0 8px; font-weight: 700; line-height: 1.4; }
 .md h1:first-child, .md h2:first-child, .md h3:first-child { margin-top: 2px; }
 .md h1 { font-size: 19px; }
