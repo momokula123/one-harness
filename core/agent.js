@@ -407,6 +407,8 @@ class Agent {
     } finally {
       this.running.delete(session.id);
       store.saveSession(session.projectId, session);
+      // 回合统一收尾：浏览器窗口是这轮亮给用户看的，答完就收回去（只 hide，状态保留）
+      try { tools.onTurnEnd(); } catch (_) { /* 收尾失败不影响回合结果 */ }
     }
   }
 

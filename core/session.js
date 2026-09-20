@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const store = require('./store');
 const images = require('./images');
-const { getProgram, toolAliasesFor } = require('./prompts');
+const { getProgram, toolAliasesFor, resolveModules } = require('./prompts');
 
 const ENTRY_TYPES = [
   'message',      // 用户/助手/工具的对话消息
@@ -32,7 +32,10 @@ function createSession({ projectId, name, programId, workingDir, parentSessionId
     programId: program.id,
     instruction: null,              // 由 agent 层填充（PROMPTS[program.prompt]）
     promptKey: program.prompt,
-    modules: modules || program.modules,
+    // **不冻结**：不显式传 modules = 挂非枚举 getter 跟程序预设实时走（resolveModules）——
+    // 代码升级加了新模块，所有没自定义过的会话立刻用上，不用建新会话。
+    // 用户在能力模块里手动改过才落成显式数组（sessions:update 的赋值触发 setter 转正）。
+    // 存 null 也不行：内核/测试有直接读 .modules.length 的地方，getter 恰好把兼容层垫上。
     approvalMode: program.approvalOverride || null, // null = 用全局设置
     model: null,                    // null = 用全局设置
     // 端点来源。'fallback' = 这个会话固定走兜底那份端点（「默认模型」专用会话，见 core/prompts.js），
@@ -48,6 +51,8 @@ function createSession({ projectId, name, programId, workingDir, parentSessionId
     entries: [],
     compaction: null,
   };
+  if (modules) s.modules = modules; // 显式传入（如某些内部子会话）才冻结
+  else resolveModules(s);           // 其余跟程序预设实时走（非枚举 getter，序列化不落盘）
   return s;
 }
 

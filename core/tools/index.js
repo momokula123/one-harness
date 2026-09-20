@@ -7,10 +7,11 @@ const webTools = require('./web');
 const skillTools = require('./skills');
 const officeTools = require('./office');
 const imageTools = require('./image');
+const browserTools = require('./browser');
 // 图片后缀/类型只有一套判定（core/images.js），工具报回来的图也走它
 const images = require('../images');
 
-const ALL = [...fsTools.tools, ...shellTools.tools, ...webTools.tools, ...skillTools.tools, ...officeTools.tools, ...imageTools.tools];
+const ALL = [...fsTools.tools, ...shellTools.tools, ...webTools.tools, ...skillTools.tools, ...officeTools.tools, ...imageTools.tools, ...browserTools.tools];
 
 const byAlias = new Map();
 const byModule = new Map();
@@ -23,6 +24,12 @@ for (const t of ALL) {
 
 function resolveTool(name) {
   return byAlias.get(String(name || '').trim()) || null;
+}
+
+// 回合结束的统一收尾口：agent 每轮 finally 调一次，各工具模块自己做清理。
+// 目前只有浏览器需要（把亮出来的窗口收回去，模型不调 browser_close 也不留尾巴）。
+function onTurnEnd() {
+  if (typeof browserTools.hideBrowser === 'function') browserTools.hideBrowser();
 }
 
 function describeTool(tool) {
@@ -88,4 +95,4 @@ function normalizeImages(list) {
   return out.length ? out : null;
 }
 
-module.exports = { ALL, byAlias, byModule, resolveTool, schemasFor, catalog, execute, classifyCommand: shellTools.classifyCommand };
+module.exports = { ALL, byAlias, byModule, resolveTool, schemasFor, catalog, execute, onTurnEnd, classifyCommand: shellTools.classifyCommand };

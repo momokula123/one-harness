@@ -620,6 +620,34 @@ function loadSession(projectId, sessionId) {
   return fixSessionWorkingDir(projectId, readJson(sessionFile(projectId, sessionId), null));
 }
 
+/**
+ * 一次性迁移：把所有会话记录里**冻结的模块清单**删掉（改成"跟程序预设实时走"，
+ * 见 core/prompts.js resolveModules）。不删的话，升级带来的新模块永远到不了老会话，
+ * 用户看到的就是"改个功能还得新建会话"。用户在能力模块里手动调过的自定义也会被
+ * 一起清掉 —— 这是这次语义变更的代价（2026-09-20 拍板"全部删除"），调回来点一下就行。
+ * 标记文件保证只跑一次：之后再点开的自定义不会被下次启动误删。
+ */
+function migrateUnfreezeModules() {
+  const marker = path.join(DATA_DIR, 'migration-modules-unfrozen.flag');
+  if (fs.existsSync(marker)) return 0;
+  let stripped = 0;
+  for (const p of listProjects()) {
+    const dir = sessionsDir(p.id);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue;
+      const file = path.join(dir, f);
+      const rec = readJson(file, null);
+      if (!rec || !Array.isArray(rec.modules)) continue;
+      delete rec.modules;
+      writeJsonAtomic(file, rec);
+      stripped += 1;
+    }
+  }
+  writeJsonAtomic(marker, { doneAt: new Date().toISOString(), stripped });
+  return stripped;
+}
+
 function saveSession(projectId, session) {
   session.updatedAt = Date.now();
   ensureDir(sessionsDir(projectId));
@@ -653,4 +681,5 @@ module.exports = {
   projectDeleteInfo, projectRoot, projectDataDir, RECORD_DIR,
   writeProjects, exportProjectIndex, importProjectIndex,
   listSessions, loadSession, saveSession, sessionFile, copyFileIfExists,
+  migrateUnfreezeModules,
 };

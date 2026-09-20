@@ -68,6 +68,7 @@ const MODULES = {
   },
   shell: { id: 'shell', label: '终端命令', tools: ['shell_command'] },
   web: { id: 'web', label: '联网抓取/搜索', tools: ['web_fetch', 'web_search'] },
+  browser: { id: 'browser', label: '内置浏览器', tools: ['browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_screenshot', 'browser_close'] },
   skills: { id: 'skills', label: '技能库', tools: ['list_skills', 'read_skill'] },
   office: { id: 'office', label: 'Office 文档', tools: ['validate_document', 'render_document'] },
   image: { id: 'image', label: '图片生成', tools: ['generate_image'] },
@@ -78,13 +79,13 @@ const MODULES = {
 
 // 模块清单一处写：omni 与「默认模型」专用会话要的是同一套能力，别抄成两份
 // （抄两份的下场是"给 omni 加了个模块，专用会话悄悄少一个"）。
-const OMNI_MODULES = ['fs', 'shell', 'web', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'];
+const OMNI_MODULES = ['fs', 'shell', 'web', 'browser', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'];
 
 const PROGRAMS = [
-  { id: 'omni', label: 'Omni', description: '通用全能：文件、终端、联网、技能、Office 文档、图片生成、检查点、压缩', prompt: 'omni', modules: OMNI_MODULES.slice() },
+  { id: 'omni', label: 'Omni', description: '通用全能：文件、终端、联网、内置浏览器、技能、Office 文档、图片生成、检查点、压缩', prompt: 'omni', modules: OMNI_MODULES.slice() },
   { id: 'coder', label: 'Coder', description: '编码导向：文件、终端、技能、Office 文档、图片生成、检查点、压缩', prompt: 'coder', modules: ['fs', 'shell', 'skills', 'office', 'image', 'checkpoints', 'compaction', 'reviewer'] },
   { id: 'coder-safe', label: 'Coder（每次都问）', description: '编码导向，但所有写/执行操作都要人工确认', prompt: 'coder', modules: ['fs', 'shell', 'skills', 'office', 'image', 'checkpoints', 'compaction'], approvalOverride: 'always-ask' },
-  { id: 'researcher', label: 'Researcher', description: '研究导向：联网抓取/搜索、文件读写、技能、Office 文档、图片生成', prompt: 'researcher', modules: ['fs', 'web', 'skills', 'office', 'image', 'compaction'] },
+  { id: 'researcher', label: 'Researcher', description: '研究导向：联网抓取/搜索、内置浏览器、文件读写、技能、Office 文档、图片生成', prompt: 'researcher', modules: ['fs', 'web', 'browser', 'skills', 'office', 'image', 'compaction'] },
   { id: 'chat', label: 'Chat', description: '纯聊天：只带联网抓取，不动文件', prompt: 'chat', modules: ['web', 'compaction'] },
   { id: 'blank', label: 'Blank', description: '空白会话：不带任何工具', prompt: 'chat', modules: [] },
   // 「默认模型」专用会话：整组端点固定走**兜底**那份（随包 config/model.json，
@@ -120,4 +121,24 @@ function toolAliasesFor(program, enabledModules) {
   return out;
 }
 
-module.exports = { PROMPTS, MODULES, PROGRAMS, listPrograms, getProgram, modulesFor, toolAliasesFor };
+// 模块清单**不冻结**：会话记录里没存 modules（或存的是 null）= 跟程序预设实时走 ——
+// 代码升级加了新模块，所有没自定义过的会话立刻用上，不再逼用户建新会话。
+// 用非枚举 getter 挂：agent/界面照常读 session.modules，但 saveSession 的 JSON 序列化
+// 不带它 —— 写回记录就等于重新冻结，白改。
+function resolveModules(session) {
+  if (!session || Array.isArray(session.modules)) return session;
+  const program = getProgram(session.programId);
+  Object.defineProperty(session, 'modules', {
+    configurable: true,
+    enumerable: false, // JSON 序列化不带它 —— 写回记录就等于重新冻结，白改
+    get() { return (program && program.modules) || []; },
+    // 赋值（能力模块开关走 sessions:update）= 用户显式自定义：转正成普通可枚举属性，
+    // 存回记录持久化。没有 setter 的话严格模式赋值直接抛 TypeError（踩过）。
+    set(v) {
+      Object.defineProperty(session, 'modules', { value: v, writable: true, enumerable: true, configurable: true });
+    },
+  });
+  return session;
+}
+
+module.exports = { PROMPTS, MODULES, PROGRAMS, listPrograms, getProgram, modulesFor, toolAliasesFor, resolveModules };

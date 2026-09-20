@@ -13,7 +13,7 @@ const projectIndex = require('./core/project-index');
 const tools = require('./core/tools');
 const checkpoints = require('./core/checkpoints');
 const { Agent, sessionEvent, sessionMeta } = require('./core/agent');
-const { listPrograms, MODULES, PROMPTS, getProgram } = require('./core/prompts');
+const { listPrograms, MODULES, PROMPTS, getProgram, resolveModules } = require('./core/prompts');
 const skillsMod = require('./core/tools/skills');
 const model = require('./core/model');
 const uistate = require('./core/uistate');
@@ -560,6 +560,7 @@ function ensureDefaultProject() {
 function loadSession(projectId, sessionId) {
   const s = store.loadSession(projectId, sessionId);
   if (!s) throw new Error('会话不存在：' + sessionId);
+  resolveModules(s); // 没自定义过的会话跟程序预设实时走（挂非枚举 getter，存回时不会冻结）
   if (!s.instruction) s.instruction = PROMPTS[s.promptKey || getProgram(s.programId).prompt];
   return s;
 }
@@ -1122,6 +1123,8 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  const unfrozen = store.migrateUnfreezeModules();
+  if (unfrozen) console.log('[migrate] 已解冻 ' + unfrozen + ' 个会话的冻结模块清单');
   registerIpc();
   buildMenu();
   createWindow();
