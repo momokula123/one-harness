@@ -824,6 +824,10 @@ function registerIpc() {
     return { meta: sessionMeta(s) };
   });
   ipcMain.handle('sessions:delete', (_e, { projectId, sessionId }) => {
+    // 审计 P1：两个 id 直接拼进删除路径。先做白名单校验 —— 含路径分隔符 / .. 的一律拒绝，
+    // 防 `sessionId='../../whatever'` 把任意文件 rm 掉。
+    const ID_SAFE = /^[A-Za-z0-9_-]+$/;
+    if (!ID_SAFE.test(String(projectId || '')) || !ID_SAFE.test(String(sessionId || ''))) return false;
     const file = store.sessionFile(projectId, sessionId);
     if (fs.existsSync(file)) fs.rmSync(file, { force: true });
     return true;
@@ -923,8 +927,15 @@ function registerIpc() {
     if (!s) return null;
     return { ...s, content: fs.readFileSync(s.path, 'utf8') };
   });
-  ipcMain.handle('skills:save', (_e, { dir, name, content }) => {
-    const target = path.join(dir || path.join(store.DATA_DIR, 'skills'), name, 'SKILL.md');
+  ipcMain.handle('skills:save', (_e, { name, content }) => {
+    // 审计 P1：dir/name 来自渲染层，之前直接 path.join 落盘 —— `../../` 能写到任意路径。
+    // 收口：只认技能根目录（渲染层本来就只传 name），name 砍成纯文件名再拒非法字符。
+    const root = path.join(store.DATA_DIR, 'skills');
+    const base = path.basename(String(name || '').trim());
+    if (!base || base === '.' || base === '..' || /[\\/:*?"<>|]/.test(base)) {
+      return { path: '', error: '技能名不合法' };
+    }
+    const target = path.join(root, base, 'SKILL.md');
     store.ensureDir(path.dirname(target));
     fs.writeFileSync(target, content, 'utf8');
     return { path: target };
@@ -932,7 +943,24 @@ function registerIpc() {
 
   ipcMain.handle('fs:readText', (_e, { projectId, sessionId, absPath }) => {
     try {
-      const buf = fs.readFileSync(absPath);
+      // 审计 P1：这里曾是全仓唯一不守"工作目录内"规矩的读口（可读任意绝对路径）。
+      // 收口到 会话工作目录 + 项目目录 两个根，其余一律拒。
+      const roots = [];
+      try {
+        const s = store.loadSession(projectId, sessionId);
+        if (s && s.workingDir) roots.push(path.resolve(s.workingDir));
+      } catch { /* 会话不存在就只剩项目目录这个根 */ }
+      try {
+        const p = store.getProject(projectId);
+        if (p && p.cwd) roots.push(path.resolve(p.cwd));
+      } catch { /* 项目不存在忽略 */ }
+      const abs = path.resolve(String(absPath || ''));
+      const inside = roots.some((root) => {
+        const rel = path.relative(root, abs);
+        return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+      });
+      if (!inside) return { ok: false, error: '路径不在本会话的工作目录或项目目录内。' };
+      const buf = fs.readFileSync(abs);
       if (buf.includes(0)) return { ok: false, error: '这是二进制文件。' };
       const text = buf.toString('utf8');
       return { ok: true, text: text.length > 200000 ? text.slice(0, 200000) + '\n…[截断]' : text, size: buf.length };
@@ -1044,6 +1072,12 @@ function registerIpc() {
   ipcMain.handle('shell:openExternal', async (_e, raw) => {
     const r = openTarget.resolve(raw);
     if (r.kind === 'empty') return { ok: false, error: '地址是空的' };
+    // 审计 P1：file:// 交给 openExternal = ShellExecuteEx 以 "open" 动词执行 ——
+    // `file://…/calc.exe` 会被直接运行（.bat/.cmd/.lnk 同理），这是本地代码执行原语。
+    // file:// 一律拒；本地文件走 shell:openPath（界面里"用系统程序打开"按钮已改为先还原成路径）。
+    if (r.kind === 'url' && r.scheme === 'file') {
+      return { ok: false, error: 'file:// 链接不走这个通道（等同执行本地文件），请用路径打开' };
+    }
     // HATCH_OPEN_DRYRUN：只判定不打开。自动化测试要用它 —— 测试不能真把浏览器/资源管理器
     // 糊到用户屏幕上（同 HATCH_PICK_FOLDER 的道理）。放在 bgBlocked 之前：dry-run 不碰系统，
     // 后台守卫管不着它。

@@ -87,7 +87,7 @@ const DEFAULT_SETTINGS = {
   // ⚠️ reasoning **只跟着兜底走**：用户自己那组端点永远不会带上它，
   // 所以在这里调思考强度，动不到用户正在跑的那套模型（见 getSettings 里那两行）。
   fallback: {
-    llm: { baseUrl: '', apiKey: '', model: '', contextLength: '', reasoning: '' },
+    llm: { baseUrl: '', apiKey: '', model: '', supportsVision: false, contextLength: '', reasoning: '' },
     image: { baseUrl: '', apiKey: '', model: '' },
   },
   agent: {
@@ -98,7 +98,6 @@ const DEFAULT_SETTINGS = {
   },
   approval: {
     mode: 'reviewer',          // auto | reviewer | always-ask
-    highRiskThreshold: 'medium',
     reviewerModel: '',         // 空 = 跟主模型相同
     onReviewerFailure: 'ask',  // 评审调用失败/输出无法解析时：ask（转人工，失败安全）| allow（照常放行）
   },
@@ -293,6 +292,11 @@ function getSettings() {
   fallback.llm.contextLength = positiveOr(fallbackRaw('llm', 'contextLength'), fac.llm.contextLength) || DEFAULT_SETTINGS.model.contextLength;
   // 思考强度走同一条路：卡片填了以卡片为准，留空跟出厂值（config/model.json 里那句 reasoning）。
   fallback.llm.reasoning = normalizeReasoning(fallbackRaw('llm', 'reasoning')) || normalizeReasoning(fac.llm.reasoning);
+  // 看图开关**两边各管各的**：常规的勾选只作用自己那套端点，兜底卡有独立勾选。
+  // 出厂 config 也能声明（缺了当 false）。resolved model 用整组换（300 行），兜底的值自然盖过常规的。
+  fallback.llm.supportsVision = typeof fallbackRaw('llm', 'supportsVision') === 'boolean'
+    ? fallbackRaw('llm', 'supportsVision')
+    : (typeof fac.llm.supportsVision === 'boolean' ? fac.llm.supportsVision : false);
   const own = { ...saved.model };
   const ownInUse = hasOwnEndpoint(own);
   // ⚠️ 用户那一组在用时，`reasoning` 被**显式清空** —— 思考强度只属于兜底那份端点。

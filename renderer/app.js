@@ -218,9 +218,26 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-/** 行内标记：先转义，再认反引号 / 粗体 / 链接 */
+/** KaTeX 渲染（vendor 本地内置，不依赖 CDN）。没加载成功就退回原文，公式照常可读。 */
+function katexHtml(tex, displayMode) {
+  if (!window.katex) return '<code>' + esc((displayMode ? '$$' : '$') + tex + (displayMode ? '$$' : '$')) + '</code>';
+  try {
+    return window.katex.renderToString(tex, { throwOnError: false, displayMode });
+  } catch (e) {
+    return '<code>' + esc(tex) + '</code>';
+  }
+}
+
+/** 行内标记：公式先摘（KaTeX 自己处理转义，不能先过 esc），再转义，认反引号 / 粗体 / 链接 */
 function mdInline(s) {
-  let t = esc(s);
+  // $…$ 判据：开 $ 后不是空白、闭 $ 前不是空白 —— "$5 和 $10" 这种价格串不会误判，
+  //（"$5 and $" 的闭 $ 前面是空格，直接被拒掉）。
+  const maths = [];
+  const withMath = String(s ?? '').replace(/\$(?=\S)([^$\n]+?)(?<=\S)\$/g, (_m, tex) => {
+    maths.push(katexHtml(tex, false));
+    return '\u0000IMATH' + (maths.length - 1) + '\u0000';
+  });
+  let t = esc(withMath);
   t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>');
   t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   t = t.replace(/\[([^\]\n]+)\]\((<?[^)\n]+>?)\)/g, (_m, txt, u) => {
@@ -228,6 +245,7 @@ function mdInline(s) {
     const safe = /^(https?:|mailto:|#|\/|\.)/i.test(href) ? href : '#';
     return `<a href="${safe}" data-link="${href}">${txt}</a>`;
   });
+  t = t.replace(/\u0000IMATH(\d+)\u0000/g, (_m, i) => maths[Number(i)]);
   return t;
 }
 
@@ -236,9 +254,18 @@ function mdInline(s) {
 function mdToHtml(text) {
   const raw = String(text ?? '').replace(/\r\n?/g, '\n');
   const codes = [];
-  const src = raw.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+  const src0 = raw.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
     codes.push('<pre class="code"><code>' + esc(code.replace(/\n$/, '')) + '</code></pre>');
     return '\u0000CODE' + (codes.length - 1) + '\u0000';
+  });
+
+  // ---- 块级公式 $$…$$ ----
+  // 整块提前摘出去（KaTeX 自己处理转义；不摘的话下面逐行解析会把跨行公式剁碎）。
+  // 代码块优先 —— ``` 围栏里的 $ 保持原样，不当公式。
+  const maths = [];
+  const src = src0.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex) => {
+    maths.push(katexHtml(tex, true));
+    return '\u0000MATH' + (maths.length - 1) + '\u0000';
   });
 
   // ---- markdown 表格 ----
@@ -349,6 +376,7 @@ function mdToHtml(text) {
   // 用 '' 直接拼，块与块之间不留任何文本节点。
   return out.join('')
     .replace(/\u0000CODE(\d+)\u0000/g, (_m, i) => codes[Number(i)])
+    .replace(/\u0000MATH(\d+)\u0000/g, (_m, i) => maths[Number(i)])
     .replace(/\u0000TABLE(\d+)\u0000/g, (_m, i) => tables[Number(i)]);
 }
 
@@ -1047,7 +1075,7 @@ function renderModelSelect() {
   if (nameEl) nameEl.textContent = cur || '未连接模型';
   if (chip) {
     chip.title = pinned
-      ? `${DEFAULT_SESSION_LABEL} 专用会话：固定走程序自带的那份（${cur || '未配置'}），改不了`
+      ? `固定用自带模型（${cur || '未配置'}）`
       : (cur ? `模型：${cur}（点开切换）` : '未连接模型端点（点开选择）');
   }
   // 左栏那个固定入口的高亮跟着一起刷新 —— 它俩问的是同一个问题（"当前会话是不是它"），
@@ -1853,8 +1881,15 @@ function handleAgentEvent(ev) {
   // 别的会话的事件会被丢掉），但运行状态是全局的记账，不能跟着一起丢，
   // 否则切走再切回那个会话，就永远复不了位（发送按钮永久禁用）。
   if (ev.sessionId && (ev.type === 'turn:start' || ev.type === 'turn:end')) {
-    if (ev.type === 'turn:start') S.runningIds.add(ev.sessionId);
-    else S.runningIds.delete(ev.sessionId);
+    if (ev.type === 'turn:start') {
+      S.runningIds.add(ev.sessionId);
+      turnStartSeen = true;
+      // 内核确认接手了，乐观保险丝可以拆了
+      clearTimeout(turnStartFuse);
+      turnStartFuse = null;
+    } else {
+      S.runningIds.delete(ev.sessionId);
+    }
     syncRunning();
   }
   if (ev.sessionId && ev.sessionId !== S.sessionId) return;
@@ -1873,11 +1908,15 @@ function handleAgentEvent(ev) {
       else S.live.reasoning += ev.delta;
       scheduleLive();
       break;
-    case 'tool:announce':
+    case 'tool:announce': {
       if (!S.live) S.live = { text: '', reasoning: '', tools: {} };
-      S.live.tools[Object.keys(S.live.tools).length] = { name: ev.name };
+      // 不能拿"当前键数"当下标：键一旦不连续（事件乱序/状态残留）就会互相覆盖。
+      // 取最大键 + 1 —— Object.values 对整数键按升序枚举，liveNode 里的工具次序不受影响。
+      const keys = Object.keys(S.live.tools).map(Number);
+      S.live.tools[(keys.length ? Math.max(...keys) : -1) + 1] = { name: ev.name };
       scheduleLive();
       break;
+    }
     case 'assistant:end':
       S.live = null;
       break;
@@ -1898,7 +1937,10 @@ function handleAgentEvent(ev) {
       S.transcript = ev.transcript || [];
       S.meta = ev.meta || S.meta;
       renderTop();
-      renderTranscript();
+      // 流式进行中**不整页重绘**对话区：此刻助手的文本还在 S.live 里、没并进 transcript，
+      // renderTranscript 会把正在追加的 .row.live 擦掉、下一帧再补回来 —— 界面上就是流式文字闪。
+      // turn:end 那条本来就会重绘一次（届时 S.live 已清、数据已全），这里只更新数据就够。
+      if (!S.live) renderTranscript();
       refreshSessions();
       refreshFiles();
       break;
@@ -2100,6 +2142,12 @@ function bindDrops() {
 }
 
 // ---------------- 发送 / 停止 ----------------
+// 乐观置位的保险丝（审计 #9）：send() 在内核确认前就把会话记成"运行中"，
+// 正常内核的 turn:start 一秒内就到；万一内核那头没接住（校验失败、排队卡死），
+// 没有这条兜底的话发送按钮永久禁用，只能靠用户点停止自愈。
+let turnStartFuse = null;
+let turnStartSeen = false;
+
 async function send() {
   const input = $('input');
   const text = input.value.trim();
@@ -2117,8 +2165,18 @@ async function send() {
   renderTranscript();
   S.atts = [];
   renderAtts();
-  S.runningIds.add(S.sessionId);
+  const sentId = S.sessionId;
+  S.runningIds.add(sentId);
   syncRunning();
+  turnStartSeen = false;
+  clearTimeout(turnStartFuse);
+  turnStartFuse = setTimeout(() => {
+    turnStartFuse = null;
+    if (S.runningIds.has(sentId) && !turnStartSeen) {
+      S.runningIds.delete(sentId);
+      syncRunning();
+    }
+  }, 15000);
   try {
     const r = await api.chat.send({ projectId: S.projectId, sessionId: S.sessionId, text, attachments: atts });
     // 用主进程真正发出去的那份 body 覆盖本地回声（[附件] xxx 那几行只允许有一处拼接规则）
@@ -2398,6 +2456,15 @@ function bindBrowser() {
   $('bw-open').onclick = async () => {
     const t = toUrl(url.value);
     if (!t) { toast('地址栏是空的', 'err'); return; }
+    // file:// 不再喂 openExternal（主进程已拦：那等于执行本地文件）。
+    // 还原成本地路径走 openPath —— 系统按关联程序打开（.html → 默认浏览器），体验不变。
+    if (/^file:\/\//i.test(t)) {
+      const p = decodeURIComponent(t.replace(/^file:\/\/\//, '')).replace(/\//g, '\\');
+      const msg = await api.shell.openPath(p);
+      if (msg) toast('打不开：' + msg, 'err');
+      else toast('已交给系统打开：' + p, 'ok');
+      return;
+    }
     const r = await api.shell.openExternal(t);
     if (r && r.ok) toast('已交给系统打开：' + r.target, 'ok');
     else toast('打不开：' + ((r && r.error) || '未知原因'), 'err');
@@ -2461,7 +2528,7 @@ function openLink(href) {
 
   (async () => {
     for (const abs of cands) {
-      const r = await api.fs.readText({ absPath: abs });   // 有 ok 就说明这个路径真的存在
+      const r = await api.fs.readText({ projectId: S.projectId, sessionId: S.sessionId, absPath: abs });   // 有 ok 就说明这个路径真的存在
       if (!r || !r.ok) continue;
       if (isHtml) { openInBrowser(abs); return; }
       if (isText) { switchPanel('files'); previewFile(abs); return; }
@@ -2588,7 +2655,8 @@ function renderFiles() {
 
 async function previewFile(absPath) {
   // 文本视图：行号 / 内容两栏，等宽字体对齐（用户要的"点击文件名查看带行号的文本"）。
-  const r = await api.fs.readText({ absPath });
+  // fs:readText 已收口到工作目录内，必须带上会话/项目上下文让主进程判定。
+  const r = await api.fs.readText({ projectId: S.projectId, sessionId: S.sessionId, absPath });
   const lines = r.ok ? String(r.text).split('\n') : [];
   const rowsHtml = lines.map((t, i) =>
     '<div class="tv-row"><span class="tv-n">' + (i + 1) + '</span><span class="tv-l">' + (esc(t) || '&nbsp;') + '</span></div>'
@@ -2645,6 +2713,7 @@ const FALLBACK_CARDS = [
     name: '语言模型',
     ctx: true,
     reasoning: true,
+    vision: true,
     tip: '「常规」没配端点时顶上；' + DEFAULT_SESSION_LABEL + ' 会话固定用它。',
     note: '留空 = 用出厂值',
     saveId: 'btn-save-fb-llm',
@@ -2700,8 +2769,8 @@ const SETTINGS_SECTIONS = {
           <div class="row-inline"><input id="set-model" value="${esc(own.model)}" placeholder="留空 = 用兜底模型" /><button id="set-model-pick" type="button" class="ghost" aria-haspopup="listbox" title="从已拉取的模型里选"><span class="ic" data-ic="chevron"></span></button></div>
         </div>
         <div class="field">
-          <label class="chk"><input type="checkbox" id="set-vision"${s.model.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
-          <div class="hint">勾上后，拖进输入框的图片会随消息发给模型。端点不回报模型是否支持看图，只能在此声明；勾错程序会自动按纯文本重发。</div>
+          <label class="chk"><input type="checkbox" id="set-vision"${own.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
+          <div class="hint">只作用「常规」这套端点；兜底卡有它自己的开关。勾错程序会自动按纯文本重发。</div>
         </div>
         <div class="row-inline field">
           <div><label>温度</label><input id="set-temp" type="number" step="0.1" min="0" max="2" value="${esc(s.model.temperature)}" /></div>
@@ -2824,6 +2893,10 @@ const SETTINGS_SECTIONS = {
           <div class="field"><label>模型</label><input id="fb-${c.key}-model" value="${esc(e.model)}" />
             <div class="row-inline"><button id="fb-${c.key}-fetch" type="button">拉取该端点的模型</button><button id="fb-${c.key}-pick" type="button" class="ghost" aria-haspopup="listbox" title="从已拉取的模型里选"><span class="ic" data-ic="chevron"></span></button></div></div>
           ${c.ctx ? `<div class="field"><label>上下文长度</label><input id="fb-${c.key}-ctx" type="number" step="1024" value="${esc(e.contextLength)}" placeholder="留空 = 用出厂值" /><div class="hint">决定自动压缩的阈值与界面上的占用条。</div></div>` : ''}
+          ${c.vision ? `<div class="field">
+            <label class="chk"><input type="checkbox" id="fb-${c.key}-vision"${e.supportsVision ? ' checked' : ''} /><span>支持图片输入（这个模型能看图）</span></label>
+            <div class="hint">只作用这份兜底端点，不影响「常规」里的勾选。勾错程序会自动按纯文本重发。</div>
+          </div>` : ''}
           ${c.reasoning ? `<div class="field"><label>思考强度</label>
             <button id="fb-${c.key}-reasoning" class="sel-trigger" aria-haspopup="listbox" aria-expanded="false" data-v="${esc(e.reasoning || '')}"><span class="sel-label">${esc(reasoningLabelOf(e.reasoning))}</span><span class="ic" data-ic="chevron"></span></button>
             <div class="hint">推理强度。只作用于这份兜底端点，不影响你在「常规」里配的模型。</div>
@@ -2915,6 +2988,11 @@ const SETTINGS_SECTIONS = {
           if (c.reasoning) {
             const tb = $('fb-' + c.key + '-reasoning');
             patch.reasoning = (tb && tb.dataset.v) || '';
+          }
+          // 看图开关：布尔，内核按原样落盘（不走"等于出厂存空串"那套，那是字符串键的规矩）
+          if (c.vision) {
+            const vb = $('fb-' + c.key + '-vision');
+            patch.supportsVision = !!(vb && vb.checked);
           }
           S.settings = await api.settings.save({ fallback: { [c.key]: patch } });
           renderSettingsModal();

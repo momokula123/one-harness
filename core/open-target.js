@@ -27,7 +27,8 @@ const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;      // http: https: file: mailto: 
  * @param {string} raw   界面里那串原文（地址栏内容 / 链接）
  * @param {{base?: string}} [opts]  相对路径的基准目录，默认当前工作目录
  * @returns {{kind:'url'|'path'|'empty', target:string, abs:string, scheme:string}}
- *   · kind='url'   → 交给 shell.openExternal（含 http/https/file/mailto…）
+ *   · kind='url'   → 交给 shell.openExternal（http/https/mailto…；file: 除外 ——
+ *                    openExternal 对 file:// 是执行原语，main.js 里已拦，见 2026-09-20 审计）
  *   · kind='path'  → 本地路径，target 已转成 file:// URL，abs 是原始绝对路径
  *                    （openExternal 不收 file:// 时才退 openPath，见 main.js）
  *   · kind='empty' → 调用方必须给用户一句提示，别静默什么都不做

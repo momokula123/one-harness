@@ -157,13 +157,20 @@ function addUsage(session, usage) {
   return u;
 }
 
+// 审计 P1：os.userInfo() 在受限/容器账号下会抛错，它裸写在每轮都要跑的 environmentBlock
+// 里 —— 一抛整轮对话就发不出去。回退到环境变量，再不行给占位串。
+function safeUserName() {
+  try { return os.userInfo().username; }
+  catch { return process.env.USERNAME || process.env.USER || 'unknown'; }
+}
+
 function environmentBlock(session) {
   const lines = [
     '  <cwd>' + session.workingDir + '</cwd>',
     '  <current_date>' + new Date().toISOString().slice(0, 10) + '</current_date>',
     '  <timezone>' + (Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown') + '</timezone>',
     '  <operating_system>' + os.platform() + ' ' + os.release() + '</operating_system>',
-    '  <username>' + os.userInfo().username + '</username>',
+    '  <username>' + safeUserName() + '</username>',
     '  <shell>' + (process.platform === 'win32' ? 'powershell' : 'bash') + '</shell>',
   ];
   return '<environment>\n' + lines.join('\n') + '\n</environment>';

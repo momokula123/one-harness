@@ -5,6 +5,7 @@
 const model = require('./model');
 const sessionLib = require('./session');
 const toolsMod = require('./tools');
+const runlog = require('./runlog');
 
 // 评审子会话只能拿到这三个只读工具（等价于 Bionic 的 readOnly 子会话）。
 // 之前不给工具，模型就把工具调用吐成文本（<tool_calls>…DSML…），<result> 反而没了。
@@ -84,6 +85,23 @@ function transcriptExcerpt(session, maxChars = 12000) {
 }
 
 async function reviewCommand(settings, { command, cwd, session, signal }) {
+  // 审计 P1：评审子会话之前零日志 —— 事后查"为什么这次被问/被拒"看不到评审侧证据。
+  // 现在每次评审落一条 gate.review（三轴 + 步数 + 耗时 + 失败原因）。
+  const t0 = Date.now();
+  const finish = (r) => {
+    runlog.log('gate.review', {
+      sessionId: (session && session.id) || null,
+      command: String(command || '').slice(0, 200),
+      steps: r.steps || 0,
+      ok: r.ok !== false,
+      risk: r.risk,
+      authorization: r.authorization,
+      correct: r.correct,
+      note: r.note || '',
+      ms: Date.now() - t0,
+    });
+    return r;
+  };
   const cfg = {
     baseUrl: settings.model.baseUrl,
     apiKey: settings.model.apiKey,
@@ -116,7 +134,7 @@ async function reviewCommand(settings, { command, cwd, session, signal }) {
       const r = await model.completeOnce(cfg, { messages, tools: schemas, signal });
       lastText = r.text || '';
       const parsed = parseResult(lastText);
-      if (parsed) return { ok: true, ...parsed, steps: steps + 1 };
+      if (parsed) return finish({ ok: true, ...parsed, steps: steps + 1 });
 
       const calls = r.toolCalls || [];
       if (calls.length) {
@@ -143,8 +161,8 @@ async function reviewCommand(settings, { command, cwd, session, signal }) {
     }
 
     const parsed = parseResult(lastText);
-    if (parsed) return { ok: true, ...parsed, steps };
-    return {
+    if (parsed) return finish({ ok: true, ...parsed, steps });
+    return finish({
       ok: false,
       raw: lastText,
       risk: 'medium',
@@ -152,9 +170,9 @@ async function reviewCommand(settings, { command, cwd, session, signal }) {
       correct: true,
       steps,
       note: '评审没有给出可解析的裁决',
-    };
+    });
   } catch (e) {
-    return { ok: false, raw: e.message, risk: 'medium', authorization: 'neutral', correct: true, note: '评审调用失败：' + e.message };
+    return finish({ ok: false, raw: e.message, risk: 'medium', authorization: 'neutral', correct: true, note: '评审调用失败：' + e.message });
   }
 }
 

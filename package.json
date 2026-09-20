@@ -1,7 +1,7 @@
 {
   "name": "one-harness",
   "productName": "One Harness",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "private": true,
   "description": "One Harness —— 风远偕来，途遥共赴 · local-first agent harness for open models (desktop)",
   "main": "main.js",
@@ -24,7 +24,8 @@
   },
   "devDependencies": {
     "electron": "^44.4.1",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "katex": "^0.16.11"
   },
   "build": {
     "appId": "com.momokula.oneharness",

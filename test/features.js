@@ -855,26 +855,40 @@
     await wait(200);
     // ⑥ 点正文里的文件名 → 右栏打开（用户报的"点击后右侧浏览器打不开"）
     //    关键覆盖两种写法：绝对路径、以及**只有文件名**的相对路径（模型最常这么写）。
+    //    审计后 fs:readText 收口到"会话工作目录/项目目录内"，靶子文件不能再拿应用自身的
+    //    index.html —— 改为用 files:paste-image 把探针页直接写进当前会话的工作目录。
     const b = r;
-    const rootFileUrl = location.href.replace(/\/renderer\/index\.html.*$/, '');
-    const rootWin = decodeURI(rootFileUrl.replace(/^file:\/\/\//, '').replace(/\//g, '\\'));
-    const absHtml = rootWin + '\\renderer\\index.html';
-    check('N-2l 靶子文件存在（应用自身的 index.html）', (await api.fs.readText({ absPath: absHtml })).ok, absHtml);
+    // fs:readText 收口后靶子必须落在**会话工作目录**里。J 段结束时没有选中会话
+    // （sessionId === null，S.meta 为空），这里先补开一个会话把 meta 带起来。
+    if (!S.sessionId) {
+      const sC = await api.sessions.create({ projectId: S.projectId, programId: 'omni', name: 'N-2 探针会话' });
+      await loadSession(sC.session.id);   // setProject 同项目会直接 return，这里要真加载 meta
+      await wait(800);
+    }
+    const cwd = (S.meta && S.meta.workingDir) || '';
+    const probeB64 = btoa('<!doctype html><meta charset="utf-8"><title>link-probe</title>\n<p>link-probe OK</p>\n<p>line3</p>\n<p>line4</p>\n<p>line5</p>\n<p>line6</p>\n<p>line7</p>\n<p>line8</p>\n<p>line9</p>\n<p>line10</p>\n<p>line11</p>\n<p>line12</p>\n<p>line13</p>');
+    const pasted = cwd ? await api.files.pasteImage({ projectId: S.projectId, sessionId: S.sessionId, name: 'link-probe.html', base64: probeB64 }) : null;
+    const absHtml = (pasted && pasted.ok)
+      ? cwd.replace(/[\\/]+$/, '') + '\\' + String(pasted.rel).replace(/\//g, '\\')
+      : '';
+    check('N-2l 靶子文件已建进工作目录且可读（fs:readText 只认工作目录内）',
+      !!absHtml && (await api.fs.readText({ projectId: S.projectId, sessionId: S.sessionId, absPath: absHtml })).ok,
+      { absHtml, pasted });
 
     openLink(absHtml);                       // ① 绝对路径
     await wait(2600);
     let u2 = '';
     try { u2 = v.getURL(); } catch (e) {}
-    check('N-2m 点绝对路径 .html → 右栏浏览器打开它', S.panel === 'browser' && /index\.html$/.test(u2), { panel: S.panel, guest: u2 });
+    check('N-2m 点绝对路径 .html → 右栏浏览器打开它', S.panel === 'browser' && /link-probe\.html$/.test(u2), { panel: S.panel, guest: u2 });
 
     // ② 相对文件名：靠检查点记录里的绝对路径兜底（模拟"模型刚生成的文件"）
     S.files = (S.files || []).concat([{ path: absHtml, kind: 'modified', changes: 1 }]);
-    openLink('index.html');
+    openLink('link-probe.html');
     await wait(2600);
     let u3 = '';
     try { u3 = v.getURL(); } catch (e) {}
     check('N-2n ★ 只给文件名（相对路径）也能打开 —— 旧代码在这里什么都不做',
-      S.panel === 'browser' && /index\.html$/.test(u3), { panel: S.panel, guest: u3, 地址栏: $id('bw-url').value });
+      S.panel === 'browser' && /link-probe\.html$/.test(u3), { panel: S.panel, guest: u3, 地址栏: $id('bw-url').value });
     S.files = S.files.filter((f) => f.path !== absHtml);
 
     // ③ 行号视图必须**留得住**：以前 renderFiles() 把 panel 的 innerHTML 清空，
@@ -927,9 +941,9 @@
     await wait(500);                                   // 等异步刷新落定
     const savedFiles = S.files;
     S.files = [
-      { path: rootWin + '\\notes\\a.html', kind: 'absent', changes: 1 },
-      { path: rootWin + '\\notes\\b.json', kind: 'modified', changes: 2 },
-      { path: rootWin + '\\notes\\c.py', kind: 'modified', changes: 1 },
+      { path: cwd + '\\notes\\a.html', kind: 'absent', changes: 1 },
+      { path: cwd + '\\notes\\b.json', kind: 'modified', changes: 2 },
+      { path: cwd + '\\notes\\c.py', kind: 'modified', changes: 1 },
     ];
     renderFiles();
     await wait(300);

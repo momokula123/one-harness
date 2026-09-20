@@ -90,16 +90,27 @@ async function streamChat(cfg, { messages, tools, signal, onEvent = () => {}, id
   const acc = { text: '', reasoning: '', toolCalls: [], finishReason: null, usage: null };
 
   try {
-    const res = await fetch(joinUrl(cfg.baseUrl, '/chat/completions'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        ...(cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: ac.signal,
-    });
+    // 连接层瞬时故障（DNS 抖动/连接被重置）重试一次：fetch() 本身抛错说明请求根本没发出去，
+    // 重试没有副作用。流中途断掉不在这里重试（会重复输出）。
+    let res = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        res = await fetch(joinUrl(cfg.baseUrl, '/chat/completions'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            ...(cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {}),
+          },
+          body: JSON.stringify(body),
+          signal: ac.signal,
+        });
+        break;
+      } catch (e) {
+        if (attempt === 2 || ac.signal.aborted) throw e;
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    }
 
     if (!res.ok || !res.body) {
       const detail = await res.text().catch(() => '');
@@ -165,6 +176,15 @@ async function streamChat(cfg, { messages, tools, signal, onEvent = () => {}, id
     acc.toolCalls = acc.toolCalls.filter(Boolean);
     onEvent({ type: 'finish', finishReason: acc.finishReason });
     return acc;
+  } catch (e) {
+    // undici 的 "fetch failed" 把真实原因（DNS 解析失败/超时/连接被重置/TLS）藏在 e.cause 里，
+    // 不透出来的话用户只看到一句 fetch failed，没法判断是断网还是端点挂了。
+    const c = e && e.cause;
+    const cause = c ? String(c.code || c.message || c).slice(0, 120) : '';
+    if (cause && e.message && !String(e.message).includes(cause)) {
+      throw new Error(`${e.message}（${cause}）`);
+    }
+    throw e;
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
     clearTimeout(hardTimer);

@@ -9,15 +9,22 @@ const MAX_OUTPUT = 30000;
 const TOO_DESTRUCTIVE = [
   { re: /\brm\s+(-[a-z]*\s+)*-[a-z]*[rf][a-z]*\s+(\/|~|\$HOME)(\s|$)/i, why: '递归删除根目录或家目录' },
   { re: /\brm\s+-rf\s+\/?(c:|\/)\s*$/i, why: '递归删除盘根目录' },
+  // 审计 P1：老清单是 Unix 中心的，反斜杠盘符路径一个都不命中。补 Windows 分支。
+  // 注意只硬拒"盘根 / 用户目录根"这一层 —— 项目本身就在 C:\Users\<名>\ 下，
+  // 连项目里的文件一起拦的话，正常删除全废。深层路径仍走分级 + 评审。
+  { re: /\brm\s+(-\w+\s+)*-\w*[rf]\w*\s+["']?[a-zA-Z]:[\\/]?["']?\s*$/i, why: '递归删除盘根目录' },
+  { re: /\brm\s+(-\w+\s+)*-\w*[rf]\w*\s+["']?[a-zA-Z]:[\\/]Users([\\/][^\\/"']*)?[\\/]?["']?\s*$/i, why: '递归删除用户目录' },
   { re: /\b(format|diskpart|mkfs(\.\w+)?)\b/i, why: '格式化/分区操作' },
   { re: /\bdd\s+if=.*of=\/dev\/(sd|nvme|hd)/i, why: '直接写裸设备' },
   { re: /\b(Remove-Item|del|rmdir)\s+.*(C:\\\\?Windows|C:\\\\?Program Files|C:\\\\?Users\\\\?[^\\]*\\)\s*$/i, why: '删除系统目录' },
+  { re: /\b(Remove-Item|del|rd|rmdir)\b[^|;&]*["']?[a-zA-Z]:[\\/]Users([\\/][^\\/"']*)?[\\/]?["']?\s*$/i, why: '删除用户目录' },
   { re: /\b(shutdown|Restart-Computer|Stop-Computer)\b.*\/(f|s|r)\b/i, why: '关机/重启' },
   { re: /\b(vssadmin|bcdedit|cipher\s+\/w)\b/i, why: '系统级破坏性操作' },
   { re: /\bcurl\b[^|]*\|\s*(ba)?sh\b/i, why: '管道执行远程脚本' },
 ];
 
 const HIGH_RISK = [
+  { re: /\brm\s+(-\w+\s+)*-\w*r\w*(\s|$)/i, why: '递归删除' },
   { re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i, why: '递归强制删除' },
   { re: /\bgit\s+push\b.*--force|\bgit\s+push\s+-f\b/i, why: '强制推送覆盖远端历史' },
   { re: /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*[fd]|checkout\s+--\s)/i, why: '丢弃本地改动' },
