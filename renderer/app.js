@@ -3217,10 +3217,15 @@ const SETTINGS_SECTIONS = {
       }
       for (const b of document.querySelectorAll('[data-skill-view]')) {
         b.onclick = async () => {
+          // 「查看」不走右栏（2026-09-21 用户拍板）：直接把 SKILL.md 交给系统默认程序
+          // （.md 关联了什么就开什么，没关联就弹系统选择框）。openPath 失败是
+          // resolve 出来的错误字符串、不是 reject —— 必须接返回值，否则静默没反应。
           const name = b.dataset.skillView;
-          closeSettings();
-          switchPanel('skills');
-          await selectSkill(name);
+          const s = (S.skills || []).find((x) => x.name === name);
+          if (!s || !s.path) { toast('找不到这个技能的 SKILL.md：' + name, 'err'); return; }
+          const msg = await api.shell.openPath(s.path);
+          if (msg) toast('打不开：' + msg, 'err');
+          else toast('已交给系统打开：' + s.path, 'ok');
         };
       }
     },

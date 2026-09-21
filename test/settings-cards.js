@@ -1,9 +1,11 @@
-// UI 端到端：设置 → 技能 = 一个技能一张卡；卡片上的「查看」能把正文带出来。
+// UI 端到端：设置 → 技能 = 一个技能一张卡；卡片上的「查看」把 SKILL.md 交给系统程序打开。
 //
 // 为什么单独一份：设置里的类别栏以前只有"打开技能目录"一个按钮，看不出装了哪些技能，
 // 也看不出哪些是常驻、哪些是随包（2026-09-19 用户要求"设置里要有卡片"）。
 // 这里断言两件事：① 卡片与技能库一一对应（名字、描述、路径、标签都对得上）；
-// ② 点卡片上的「查看」真的会关掉设置、切到右栏技能页、把全文灌进文本框。
+// ② 点卡片上的「查看」**不切右栏**、设置还开着，并把 SKILL.md 交给了系统
+//    （证据 = handler 弹的「已交给系统打开：<路径>」toast；2026-09-21 用户拍板
+//    "查看不走右栏，直接拉系统 notepad"）。
 //
 // 数据目录由跑分器指定（HATCH_UI_DATA_DIR），里面得先放好技能，否则卡片数会是 0。
 (async () => {
@@ -78,23 +80,18 @@
   viewBtn.click();
   await wait(1200);
 
-  out.settingsClosed = $id('settings-modal').classList.contains('hidden');
-  out.skillsPanelShown = !$id('panel-skills').classList.contains('hidden');
-  out.nameFilled = $id('skill-name').value === pick.name;
-  out.titleHasPath = /SKILL\.md/.test($id('skill-edit-title').textContent);
-  out.bodyLen = ($id('skill-content').value || '').length;
-  out.chipHighlighted = !!document.querySelector('#skill-chips .chip.on[data-skill="' + pick.name + '"]');
-  const full = await window.hatch.skills.read(pick.name);
-  out.bodyMatchesDisk = !!full && norm($id('skill-content').value) === norm(full.content);
-  out.clickedCardNeverSelectedOther = out.nameFilled && out.bodyMatchesDisk;
+  // 新行为：不关设置、不切右栏，SKILL.md 交给系统（toast 为证）。
+  // 反面对照：右栏技能页没被切过去（旧实现的现场）。
+  out.settingsStillOpen = !$id('settings-modal').classList.contains('hidden');
+  out.rightPanelUntouched = $id('panel-skills').classList.contains('hidden');
+  out.openToast = [...document.querySelectorAll('#toasts .toast')]
+    .map((t) => t.textContent)
+    .find((t) => t.indexOf('已交给系统打开') === 0 && t.indexOf(pick.name) !== -1) || '';
+  out.rightPanelNeverSelectedOther = out.settingsStillOpen && out.rightPanelUntouched;
 
-  // ---------------- ③ 再回设置看一眼（顺手给截图留画面） ----------------
-  // 走到这里右栏停在技能页 —— 再进设置必须还是那 10 张卡（重进不能变空），
+  // ---------------- ③ 再看一眼（顺手给截图留画面） ----------------
+  // 设置从②开始就没关过 —— 必须还是那 N 张卡（重进不能变空），
   // 并且把这一屏**留着不关**：跑分器的截图是在注入脚本跑完之后抓的。
-  $id('btn-open-settings').click();
-  await wait(400);
-  document.querySelector('#settings-nav .item[data-sec="skills"]').click();
-  await wait(600);
   const again = [...document.querySelectorAll('#settings-content .skill-card')];
   out.reopenCardCount = again.length;
   out.stayOpenForShot = !$id('settings-modal').classList.contains('hidden');
@@ -114,9 +111,8 @@
     '设置 → 技能：随包/自装 两种来源标签都在':
       out.cardSourceTags.length >= 1 && JSON.stringify(out.cardSourceTags.slice().sort()) ===
         JSON.stringify(out.expectedSources.map((s) => (s === 'builtin' ? '随包' : '自装')).sort()),
-    '卡片「查看」：关掉设置、切到右栏技能页': out.settingsClosed && out.skillsPanelShown,
-    '卡片「查看」：文本框里是这个技能的全文（与盘上一致）': out.nameFilled && out.bodyMatchesDisk && out.bodyLen > 0,
-    '卡片「查看」：标题带出 SKILL.md 路径、对应胶囊高亮': out.titleHasPath && out.chipHighlighted,
+    '卡片「查看」：设置还开着、右栏没被切走': out.settingsStillOpen && out.rightPanelUntouched,
+    '卡片「查看」：SKILL.md 交给了系统（toast 带出路径）': !!out.openToast,
     '卡片是常驻画面（等一会儿卡片都还在，不是渲染残影）': out.stillOpenBeforeClick && out.cardsStillThereBeforeClick,
     '再进设置：卡片还是一片完整（重进不会变空）': out.reopenCardCount === out.expectedCount && out.cardsStillComplete,
     '截这一屏：设置开着、停在技能分区': out.stayOpenForShot,

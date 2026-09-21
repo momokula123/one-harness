@@ -665,10 +665,12 @@ button.ghost.sm { padding: 2px 8px; font-size: 11px; }
 .chip.on { background: var(--accent-soft); border-color: #c3d5fb; color: var(--accent); }
 
 /* ---------- 设置 → 技能：一个技能一张卡 ---------- */
-.skill-cards { display: grid; gap: 8px; }
+/* 一排 4 张；minmax(0,1fr) 防止长技能名把列撑破 */
+.skill-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .skill-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-card); padding: 10px 12px; }
 .skill-card:hover { border-color: #c3d5fb; }
-.skill-card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 窄卡装不下时按钮折到下一行，margin-left:auto 仍负责右对齐 */
+.skill-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .skill-card-name { font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skill-card .pill { font-size: 10.5px; flex: none; }
 .skill-card-btn { margin-left: auto; flex: none; padding: 3px 10px; }
