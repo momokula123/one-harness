@@ -3168,17 +3168,22 @@ const SETTINGS_SECTIONS = {
       }
       const intro = all.filter((s) => s.tier === 'intro');
       const outro = all.filter((s) => s.tier !== 'intro');
+      // 卡片是**四段固定骨架**：名称（两行高）→ 标签 → 描述（三行高）→ 操作条（一行）。
+      // 每段高度固定（见 styles.css 的注释）—— 这是"图标对齐"的前提：底座一样高，
+      // 三个动作才可能落在同一条水平线上。别把某段改成内容自适应高度，一改就错开。
       const card = (s) => `
         <div class="skill-card${s.enabled === false ? ' off' : ''}">
-          <div class="skill-card-top">
-            <span class="skill-card-name">${esc(s.name)}</span>
+          <div class="skill-card-name" title="${esc(s.name)}">${esc(s.name)}</div>
+          <div class="skill-card-tags">
             <span class="pill ${s.tier === 'intro' ? 'mint' : 'warn'}">${s.tier === 'intro' ? '常驻' : '按需'}</span>
             <span class="pill sky">${s.source === 'builtin' ? '随包' : '自装'}</span>
-            <button class="ghost skill-card-btn" data-skill-toggle="${esc(s.name)}">${s.enabled === false ? '启用' : '停用'}</button>
-            <button class="ghost skill-card-btn" data-skill-view="${esc(s.name)}">查看</button>
           </div>
-          <div class="skill-card-desc">${esc(s.description || '这份 SKILL.md 没有写 description。')}</div>
-          <div class="skill-card-path" title="${esc(s.path)}">${esc(s.dir)}</div>
+          <div class="skill-card-desc" title="${esc(s.description || '')}">${esc(s.description || '这份 SKILL.md 没有写 description。')}</div>
+          <div class="skill-card-foot">
+            <button class="sk-act" data-skill-toggle="${esc(s.name)}">${s.enabled === false ? '启用' : '停用'}</button>
+            <button class="sk-act" data-skill-view="${esc(s.name)}">查看</button>
+            <button class="sk-act sk-icon" data-skill-folder="${esc(s.name)}" title="打开所在文件夹：${esc(s.dir)}"><span class="ic" data-ic="folder"></span></button>
+          </div>
         </div>`;
       const group = (title, note, arr) => (arr.length ? `
         <div class="group-title">${title} · ${arr.length} 个</div>
@@ -3213,6 +3218,17 @@ const SETTINGS_SECTIONS = {
           S.skills = await api.skills.list();
           renderSkillsPanel();
           toast((cur.enabled ? '已停用：' : '已启用：') + name, 'ok');
+        };
+      }
+      // 文件夹图标：直接把那个技能的目录交给资源管理器（路径不再占卡片面积）。
+      // openPath 对目录 = 打开该目录；失败是 **resolve 出来的错误字符串**、不是 reject，
+      // 必须接返回值，否则静默没反应（与「查看」同一个坑）。
+      for (const b of document.querySelectorAll('[data-skill-folder]')) {
+        b.onclick = async () => {
+          const s = (S.skills || []).find((x) => x.name === b.dataset.skillFolder);
+          if (!s || !s.dir) { toast('找不到这个技能的文件夹：' + b.dataset.skillFolder, 'err'); return; }
+          const msg = await api.shell.openPath(s.dir);
+          if (msg) toast('打不开：' + msg, 'err');
         };
       }
       for (const b of document.querySelectorAll('[data-skill-view]')) {

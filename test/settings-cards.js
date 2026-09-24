@@ -49,7 +49,16 @@
   // 这里要断言的是"同一批技能"，不是"同一个次序"。
   out.namesMatch = JSON.stringify(out.cardNames.slice().sort()) === JSON.stringify(expected.map((s) => s.name).sort());
   out.everyCardHasDesc = cards.length > 0 && cards.every((c) => (c.querySelector('.skill-card-desc') || {}).textContent.trim().length > 0);
-  out.everyCardHasPath = cards.every((c) => /[\\/]/.test((c.querySelector('.skill-card-path') || {}).textContent || ''));
+  // 路径不再铺在卡片上，而是挪进文件夹图标的 title（2026-09-23 技能卡重排版）——
+  // 所以这里断言的是"图标按钮的 title 里含这个技能的目录"，而不是找一行路径文本。
+  const dirOf = new Map(expected.map((s) => [s.name, s.dir]));
+  out.everyCardHasFolder = cards.every((c) => {
+    const dir = dirOf.get(c.querySelector('.skill-card-name').textContent);
+    const b = c.querySelector('.skill-card-foot button[data-skill-folder]');
+    return !!dir && /[\\/]/.test(dir) && !!b && String(b.getAttribute('title') || '').indexOf(dir) !== -1;
+  });
+  // 四段固定骨架（名称 → 标签 → 描述 → 操作条）是"图标对齐"的前提，少一段就会错开。
+  out.everyCardHasFoot = cards.every((c) => !!c.querySelector('.skill-card-foot'));
   out.everyCardHasButton = cards.every((c) => {
     const b = c.querySelector('button[data-skill-view]');
     return !!b && b.tagName === 'BUTTON';
@@ -104,7 +113,8 @@
     '设置 → 技能：每张卡都有一个技能（数量与技能库一致）': out.cardCount === out.expectedCount && out.cardCount > 0,
     '设置 → 技能：卡片就是技能库那一批（名字集合一致，顺序按 tier 分组）': out.namesMatch,
     '设置 → 技能：每张卡都有名字、描述、所在文件夹、查看按钮':
-      out.everyCardHasDesc && out.everyCardHasPath && out.everyCardHasButton,
+      out.everyCardHasDesc && out.everyCardHasFolder && out.everyCardHasButton,
+    '设置 → 技能：卡片是四段固定骨架（操作条贴在卡底）': out.everyCardHasFoot,
     '设置 → 技能：常驻/按需 两种标签都在，且与接口 tier 一致':
       out.cardTierTags.length >= 1 && out.tierTagsMatch && JSON.stringify(out.cardTierTags.slice().sort()) ===
         JSON.stringify(out.expectedTiers.map((t) => (t === 'intro' ? '常驻' : '按需')).sort()),

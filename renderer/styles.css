@@ -665,17 +665,54 @@ button.ghost.sm { padding: 2px 8px; font-size: 11px; }
 .chip.on { background: var(--accent-soft); border-color: #c3d5fb; color: var(--accent); }
 
 /* ---------- 设置 → 技能：一个技能一张卡 ---------- */
-/* 一排 4 张；minmax(0,1fr) 防止长技能名把列撑破 */
-.skill-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.skill-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-card); padding: 10px 12px; }
+/* 技能卡：四段固定骨架（名称 → 标签 → 描述 → 操作条）。
+   ★ 每段都写死高度，是"对齐"的全部秘密：底下的操作条之所以能横平，
+   是因为上面三段高度一样。把任何一段改成内容自适应，卡片之间立刻错开。
+   列宽用 auto-fill + 186px 下限：内容区约 620px，正好 3 列 —— 4 列会挤到
+   名字要截断、按钮折行（就是改版前那副样子）。 */
+.skill-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(186px, 1fr)); gap: 10px; }
+.skill-card {
+  display: flex; flex-direction: column;
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-card); padding: 11px 13px 10px;
+}
 .skill-card:hover { border-color: #c3d5fb; }
-/* 窄卡装不下时按钮折到下一行，margin-left:auto 仍负责右对齐 */
-.skill-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
-.skill-card-name { font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.skill-card .pill { font-size: 10.5px; flex: none; }
-.skill-card-btn { margin-left: auto; flex: none; padding: 3px 10px; }
-.skill-card-desc { color: var(--text-2); font-size: 12px; line-height: 1.6; margin-top: 7px; }
-.skill-card-path { font-family: var(--mono); font-size: 11px; color: var(--text-4); margin-top: 7px; word-break: break-all; }
+.skill-card-name {
+  font-family: var(--mono); font-size: 12px; font-weight: 600; line-height: 1.35;
+  /* overflow-wrap:anywhere（不是 break-all）：先找连字符/词边界断，实在放不下才硬断。
+     break-all 会把 document-processing-and-graphics 从词中间劈成 "…-and" / "-graphics"。 */
+  color: var(--text); height: 2.7em; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.skill-card-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.skill-card .pill { font-size: 10.5px; padding: 2px 8px; flex: none; }
+/* 行距 1.65、三行高 = 4.95em。短描述也占满三行 —— 宁可在卡里留白，
+   也不让"这张卡有描述、那张没有"把操作条推上推下。全文在 title 里。 */
+.skill-card-desc {
+  color: var(--text-2); font-size: 12px; line-height: 1.65;
+  height: 4.95em; margin-top: 9px; overflow: hidden; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+/* 操作条：三个动作**一行排开**。margin-top:auto 让它贴住卡片底边；
+   同排卡片被 grid 拉齐高度时，多出来的空白落在描述下方，而不是把按钮顶上去。 */
+.skill-card-foot {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line-soft);
+}
+.sk-act {
+  flex: none; padding: 3px 10px; border-radius: 7px; cursor: pointer;
+  font-family: inherit; font-size: 11.5px; line-height: 1.5;
+  background: #fff; border: 1px solid var(--line); color: var(--text-2);
+}
+.sk-act:hover { background: var(--bg-2); border-color: #d5d5da; color: var(--text); }
+/* 文件夹图标：align-self:stretch 让它和旁边文字按钮**等高**（不用手写高度 ——
+   手写的数一旦和按钮的内边距对不上，就差那么一两像素，正是"看着不对齐"）。 */
+.sk-act.sk-icon {
+  margin-left: auto; align-self: stretch; width: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center; color: var(--text-3);
+}
+.sk-act.sk-icon .ic, .sk-act.sk-icon .ic svg { width: 16px; height: 16px; }
+.sk-act.sk-icon:hover { color: var(--accent); border-color: #c3d5fb; background: var(--bg-2); }
 
 /* 设置 → 兜底模型：两张卡（语言模型 / 生图）。样式与技能卡片同一套语言，
    但类名分开 —— 技能卡片是「按技能库渲染的墙」，别让两处共用一个选择器。 */
