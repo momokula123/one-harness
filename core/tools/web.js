@@ -48,16 +48,32 @@ const webFetch = {
   parameters: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: 'Absolute http(s) URL' },
+      url: { type: 'string', description: 'URL to fetch. The scheme may be omitted — then it is tried as http first and https as a fallback.' },
       maxChars: { type: 'integer', description: 'Max characters to return. Default from settings.' },
     },
     required: ['url'],
   },
   async run(args, ctx) {
-    let url = String(args.url || '').trim();
-    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const input = String(args.url || '').trim();
+    if (!input) return { text: '抓取失败：地址是空的。', isError: true };
+    // 与 browser_open 同一口径（那份的说明见 core/tools/browser.js 的 urlCandidates）：
+    // 没写协议就 http 先试、https 兜底 —— 旧写法一律补 https，本机/内网的 http 服务抓不到。
+    // fetch 用 redirect:'follow'，支持 https 的站点在 http 上会自己 301 过去，所以先走 http 不吃亏。
+    const cands = /^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? [input] : ['http://' + input, 'https://' + input];
+    let url = cands[0];
     try {
-      const res = await fetchWithTimeout(url, ctx.settings.web.fetchTimeoutMs);
+      let res = null;
+      let lastErr = null;
+      for (const u of cands) {
+        try {
+          res = await fetchWithTimeout(u, ctx.settings.web.fetchTimeoutMs);
+          url = u;
+          break;
+        } catch (e) {
+          lastErr = e;                      // 网络级失败（拒绝连接/DNS/SSL）才轮得到下一个候选
+        }
+      }
+      if (!res) throw lastErr;
       const ctype = res.headers.get('content-type') || '';
       const raw = await res.text();
       const cap = Math.min(Number(args.maxChars) || ctx.settings.web.maxChars, 200000);

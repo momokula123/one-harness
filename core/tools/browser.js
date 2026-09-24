@@ -71,28 +71,61 @@ function toRel(workingDir, file) {
   return path.relative(workingDir, file).replace(/\\/g, '/');
 }
 
+/**
+ * 「调用方给的地址」→「按顺序尝试的候选 URL」。
+ *
+ * ★ 旧写法是一律补 `https://`，于是 `localhost:3000`、`192.168.1.9:8080`、`10.0.0.5:8080`
+ *   这类**只跑 http 的服务**永远打不开（补成 https 后连接直接失败），用户看到的就是
+ *   「内置浏览器只接受 https」。而模型给的地址十有八九不带协议。
+ *
+ * 现在的口径：
+ *   · 调用方自己写了协议 → 只有一个候选，照它走（不自作主张替他换）；
+ *   · 没写协议 → http 先试、https 兜底。方向不能反 —— http-only 的站点补 https 必失败，
+ *     而支持 https 的站点在 80 口通常自己 301 过去；反过来先试 https 的话，
+ *     本机/内网这种最常见的目标要先白等一次失败。
+ *
+ * 安全边界不变：只有 http / https，file:// 等一律拒（那是"执行本地文件"的原语）。
+ */
+function urlCandidates(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return { error: '地址是空的。' };
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    let u;
+    try {
+      u = new URL(s);
+    } catch {
+      return { error: `这不是合法地址：${s}` };
+    }
+    if (!/^https?:$/.test(u.protocol)) return { error: '只支持 http/https。' };
+    return { list: [s] };
+  }
+  return { list: ['http://' + s, 'https://' + s] };
+}
+
 // 页面加载等待：loadURL 的 promise 在 did-finish-load 落定；SPA 常见"load 完还在渲染"，
-// 再给 600ms 安顿。did-fail-load（含 ERR_NAME_NOT_RESOLVED 这类）会把 loadURL reject 掉。
-async function navigate(url) {
+// 再给 600ms 安顿。did-fail-load（含 ERR_NAME_NOT_RESOLVED / ERR_CONNECTION_REFUSED 这类）
+// 会把 loadURL reject 掉 —— 那正是"换下一个候选"的信号。
+async function navigate(raw) {
   const w = ensureWindow();
-  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-  let u;
-  try {
-    u = new URL(url);
-  } catch {
-    return { error: `这不是合法地址：${url}` };
+  const c = urlCandidates(raw);
+  if (c.error) return { error: c.error };
+  let lastUrl = c.list[0];
+  let lastMsg = '';
+  for (const url of c.list) {
+    lastUrl = url;
+    try {
+      await w.webContents.loadURL(url);
+      await new Promise((r) => setTimeout(r, 600));
+      refFps = new Map(); // 换页了，旧编号/旧指纹全部作废
+      return { ok: true };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (/ERR_ABORTED/.test(msg)) return { error: '加载被页面自己中断了，重试一次或换地址。' };
+      lastMsg = msg;
+    }
   }
-  if (!/^https?:$/.test(u.protocol)) return { error: '只支持 http/https。' };
-  try {
-    await w.webContents.loadURL(url);
-  } catch (e) {
-    const msg = String((e && e.message) || e);
-    if (/ERR_ABORTED/.test(msg)) return { error: '加载被页面自己中断了，重试一次或换地址。' };
-    return { error: `打不开 ${url}（${msg.slice(0, 160)}）` };
-  }
-  await new Promise((r) => setTimeout(r, 600));
-  refFps = new Map(); // 换页了，旧编号/旧指纹全部作废
-  return { ok: true };
+  const tried = c.list.length > 1 ? '（http 与 https 都试过了）' : '';
+  return { error: `打不开 ${lastUrl}${tried}（${lastMsg.slice(0, 140)}）` };
 }
 
 // 快照注入脚本：跑在页面上下文。可见的可交互元素编号 + 文字 + 中心坐标。
@@ -235,7 +268,9 @@ const browserOpen = {
   description: 'Open a URL in the built-in offscreen browser (not the user-visible panel) and return a snapshot of interactive elements with [ref] numbers.',
   parameters: {
     type: 'object',
-    properties: { url: { type: 'string', description: 'Absolute http(s) URL' } },
+    properties: {
+      url: { type: 'string', description: 'URL to open. The scheme may be omitted — then it is tried as http first and https as a fallback. http/https only (no file://).' },
+    },
     required: ['url'],
   },
   async run(args) {
@@ -385,4 +420,5 @@ function hideBrowser() {
 module.exports = {
   tools: [browserOpen, browserSnapshot, browserClick, browserType, browserScroll, browserScreenshot, browserClose],
   hideBrowser,
+  urlCandidates, // 纯函数，给 test/browser-nav.js 直接断言（不依赖 Electron）
 };
