@@ -222,6 +222,51 @@ function messagesChars(messages) {
   return n;
 }
 
+// 补出来的那条 tool 消息的正文（给模型看的"事实"：这轮被打断，这个调用没跑）
+const MISSING_TOOL_TEXT = '（未执行：那一轮被用户中断）';
+
+/**
+ * 工具组自愈：组装好的消息里，assistant(tool_calls) 后面**必须紧跟它每个 call 的 tool 消息**——
+ * 中间不能夹别的角色，也不能少任何一个；少一个上游就整轮 400：
+ *   An assistant message with 'tool_calls' must be followed by tool messages
+ *   responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)
+ *
+ * 缺口是哪儿来的：① 用户按「停止」正好打断一个"一次返回多个调用"的工具组
+ * （agent.js 的中断补齐只管新事件）；② 压缩切点落在组中间。事件日志是 append-only 的，
+ * 老缺口改不掉，所以在**发请求这一刻**把它修成合法的：日志一个字节不动。
+ *   - 组里有 call 没收到回应 → 在该组末尾补一条 tool 消息（内容见 MISSING_TOOL_TEXT）；
+ *   - 没有所属组的 tool 消息（压缩切点留下的孤儿）、以及重复 id → 丢掉，否则上游同样 400。
+ * 合法的输入原样返回（不多一条、不少一条），所以正常会话的请求与改前逐字节一致。
+ */
+function normalizeToolGroups(messages) {
+  const out = [];
+  let group = null; // { ids, seen }
+  const closeGroup = () => {
+    if (!group) return;
+    for (const id of group.ids) {
+      if (group.seen.has(id)) continue;
+      out.push({ role: 'tool', tool_call_id: id, content: MISSING_TOOL_TEXT });
+    }
+    group = null;
+  };
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      if (group && group.ids.has(m.tool_call_id) && !group.seen.has(m.tool_call_id)) {
+        group.seen.add(m.tool_call_id);
+        out.push(m);
+      }
+      continue;
+    }
+    closeGroup();
+    out.push(m);
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      group = { ids: new Set(m.tool_calls.map((c) => c.id)), seen: new Set() };
+    }
+  }
+  closeGroup();
+  return out;
+}
+
 // ---- 把事件日志渲染成模型消息 ----
 // vision=true 且这条 user 消息带 image part 时，content 用**数组**形
 // （`[{type:'text'},{type:'image_url',image_url:{url}}]`，OpenAI /chat/completions 的规范）；
@@ -278,7 +323,7 @@ function renderMessages(session, { systemSuffix, vision } = {}) {
       }
     }
   }
-  return messages;
+  return normalizeToolGroups(messages);
 }
 
 // 供 UI 显示用：把事件日志转成"看起来像聊天"的行
@@ -343,5 +388,6 @@ module.exports = {
   userMessage, assistantMessage, toolMessage,
   entryPlainText, estimateTokens, estimateChars, addUsage, environmentBlock,
   renderMessages, renderTranscript, forkSession, messagesChars,
+  normalizeToolGroups, MISSING_TOOL_TEXT,
   toolAliasesFor,
 };

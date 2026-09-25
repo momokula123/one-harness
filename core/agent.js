@@ -77,6 +77,37 @@ function logCoreEvent(ev) {
   }
 }
 
+/**
+ * 把这一批调用里**还没落盘回应**的补成"未执行"。
+ *
+ * 为什么必须有：工具组（assistant.tool_calls + 每个 call 的 tool 消息）在协议上是原子的。
+ * 用户按「停止」打断"一次返回多个调用"的组时，循环在下一轮开头就抛出去了，
+ * 剩下的调用永远没有 tool 消息 —— 而事件日志 append-only，这个缺口永久留在会话里，
+ * 之后这个会话**每一次**请求都被上游判 400（insufficient tool messages following
+ * tool_calls message），等于废掉。这里在收尾处把日志记全，模型下一轮也知道那些调用没跑。
+ * 以"日志里已有哪些 callId 的回应"为准，所以正常走完的组补 0 条，不会重复。
+ */
+function fillUnansweredToolCalls(session, calls) {
+  if (!calls || !calls.length) return 0;
+  const answered = new Set();
+  for (const e of session.entries) {
+    if (e.type !== 'message' || e.role !== 'tool') continue;
+    for (const p of e.parts || []) if (p.type === 'toolCallResult') answered.add(p.callId);
+  }
+  let n = 0;
+  for (const c of calls) {
+    if (!c || !c.callId || answered.has(c.callId)) continue;
+    sessionLib.toolMessage(session, {
+      callId: c.callId,
+      name: c.name,
+      text: '（未执行：本轮被用户中断）',
+      isError: true,
+    });
+    n++;
+  }
+  return n;
+}
+
 class Agent {
   constructor({ getSettings, emit, askUser }) {
     this.getSettings = getSettings;
@@ -149,6 +180,10 @@ class Agent {
     const ac = new AbortController();
     this.running.set(session.id, ac);
     let steps = 0;
+    // 本步模型要求执行的那批调用。中断/报错时按它把没回应的补齐（见 catch 与
+    // fillUnansweredToolCalls）—— 事件日志 append-only，缺一个 tool_call_id 就永久缺下去，
+    // 之后每次请求都要靠 session.js 的 normalizeToolGroups 兜底，不如在这里就把日志记全。
+    let pendingCalls = [];
     // 计时基准必须放在 try **外面**：catch 里要记 elapsedMs，而 turn 是在 try 内部建的 ——
     // 万一 getSettings() 就抛错（turn 还没建），catch 里读 turn.startedAt 会再抛一个
     // ReferenceError，把"折成失败结果"的路径炸穿（曾实测：3 条用例因此变红）。
@@ -260,6 +295,8 @@ class Agent {
           parts.push({ type: 'toolCallRequest', callId: c.callId, name: c.name, argsText: c.argsText, args: parsed });
         }
         const assistantEntry = sessionLib.appendEntry(session, { type: 'message', role: 'assistant', parts, id: assistantId });
+        // 这条 assistant 已经落盘了，它要求的调用从这一刻起就必须都有回应 —— 先记下来
+        pendingCalls = acc.toolCalls;
         this.emit({ type: 'assistant:end', sessionId: session.id, entryId: assistantEntry.id });
         this.emit(sessionEvent(session));
 
@@ -392,6 +429,9 @@ class Agent {
       return { ok: false, reason: 'max-steps', steps };
     } catch (e) {
       const aborted = ac.signal.aborted;
+      // 先补工具组的缺口，再记 interrupted/error：这样会话文件本身就是自洽的
+      // （停止打断多调用组、工具执行抛异常、审批中途出错，三条路都收在这一处）。
+      try { fillUnansweredToolCalls(session, pendingCalls); } catch (_) { /* 补账失败不能盖掉原报错 */ }
       // 中断与报错都落日志：这是"为什么停了"最直接的证据（用户手动停 / 超时 / 接口报错分开）
       runlog.log('turn.abort', {
         sessionId: session.id, aborted, steps,
