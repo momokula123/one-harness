@@ -106,8 +106,18 @@ const DEFAULT_SETTINGS = {
     shellPath: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
   },
   web: {
-    searchEndpoint: '',        // 留空则关闭联网搜索；填 SearxNG 实例地址即可
+    // 搜索服务二选一（写法和生图那两路一样：两套参数各存各的，切换不互相覆盖）：
+    //   ''         没选 —— web_search 会明确说去哪儿选，不猜
+    //   'lanprint' 私有转发层（把 s.jina.ai 的搜索结果转成 Markdown），要用户自己填密钥
+    //   'searxng'  自建 SearxNG 的 JSON API
+    searchProvider: '',
+    lanprint: { endpoint: '', key: '' },   // endpoint 留空 = 用内置的 https://jinaapi.lanprint.com
+    searxng: { endpoint: '' },
+    searchEndpoint: '',        // 只有 SearxNG 那个年代留下的旧字段，仍认（见 web.js 的 resolveSearch）
     fetchTimeoutMs: 20000,
+    // 搜索单独一条超时：实测转发层一次搜索要 20~30 秒（它要等上游 s.jina.ai 抓完整摘要），
+    // 跟抓页面共用 fetchTimeoutMs 会"配置全对却每次超时"。
+    searchTimeoutMs: 90000,
     maxChars: 20000,
   },
   ui: {

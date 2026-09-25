@@ -3251,19 +3251,52 @@ const SETTINGS_SECTIONS = {
     label: '高级',
     render() {
       const s = S.settings;
+      const w = s.web;
+      const provider = String(w.searchProvider || '').trim();
+      // 旧设置里那个只有 SearxNG 的年代留下的端点也显示出来，别让人以为丢了
+      const searxUrl = (w.searxng && w.searxng.endpoint) || w.searchEndpoint || '';
       return `
         <div class="group-title">工具</div>
         <div class="field"><label>Shell</label><input id="set-shell" value="${esc(s.shell.shellPath)}" /></div>
-        <div class="field"><label>联网搜索端点（SearxNG JSON API）</label><input id="set-search" value="${esc(s.web.searchEndpoint)}" placeholder="例如 http://127.0.0.1:8888" /></div>
+        <div class="field"><label>搜索服务</label>
+          <select id="set-search-provider">
+            <option value=""${provider === '' ? ' selected' : ''}>不使用</option>
+            <option value="lanprint"${provider === 'lanprint' ? ' selected' : ''}>One 搜索</option>
+            <option value="searxng"${provider === 'searxng' ? ' selected' : ''}>SearxNG</option>
+          </select>
+        </div>
+        <div id="search-fields-lanprint" style="${provider === 'lanprint' ? '' : 'display:none'}">
+          <div class="field"><label>地址</label><input id="set-search-lanprint-url" value="${esc((w.lanprint && w.lanprint.endpoint) || '')}" placeholder="留空 = 用内置地址" /></div>
+          <div class="field"><label>密钥</label><input id="set-search-lanprint-key" type="password" value="${esc((w.lanprint && w.lanprint.key) || '')}" placeholder="服务方提供" /></div>
+        </div>
+        <div id="search-fields-searxng" style="${provider === 'searxng' ? '' : 'display:none'}">
+          <div class="field"><label>地址</label><input id="set-search-searxng-url" value="${esc(searxUrl)}" placeholder="例如 http://127.0.0.1:8888" /></div>
+        </div>
+        <div class="field"><label>搜索超时（毫秒）</label><input id="set-search-timeout" type="number" value="${esc(String(w.searchTimeoutMs || 90000))}" placeholder="90000" /></div>
         <div class="row-inline"><button id="btn-save-tools" class="primary">保存</button></div>
         <div class="hint">Shell 路径只有这里能改。</div>
       `;
     },
     bind() {
+      const sel = $('set-search-provider');
+      if (sel) {
+        sel.onchange = () => {
+          const lp = $('search-fields-lanprint');
+          const sx = $('search-fields-searxng');
+          if (lp) lp.style.display = sel.value === 'lanprint' ? '' : 'none';
+          if (sx) sx.style.display = sel.value === 'searxng' ? '' : 'none';
+        };
+      }
       on('btn-save-tools', async () => {
+        const val = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
         S.settings = await api.settings.save({
-          shell: { shellPath: $('set-shell').value.trim() },
-          web: { searchEndpoint: $('set-search').value.trim() },
+          shell: { shellPath: val('set-shell') },
+          web: {
+            searchProvider: sel ? sel.value : '',
+            lanprint: { endpoint: val('set-search-lanprint-url'), key: val('set-search-lanprint-key') },
+            searxng: { endpoint: val('set-search-searxng-url') },
+            searchTimeoutMs: Number(val('set-search-timeout')) || 90000,
+          },
         });
         toast('已保存', 'ok');
       });

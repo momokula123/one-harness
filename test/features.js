@@ -523,6 +523,60 @@
     });
   }
 
+  // ============ L2. 联网搜索的配置选项（0.1.22：服务二选一 + 各自的参数） ============
+  prog("L2. 联网搜索的配置选项（服务二选一）");
+  // 三件事都得在界面上有落点：① 选服务；② 两套参数各填各的、切换不互相覆盖；
+  // ③ 保存真的经 IPC 落盘（tools 读的就是这份，靠 test/search-tool.js 的第 8 段收口）。
+  {
+    const before = (await api.settings.get()).web || {};
+    openSettings('advanced');
+    await wait(350);
+    const sel = $id('set-search-provider');
+    check('L2a 高级分区里有「搜索服务」下拉', !!sel);
+    check('L2b 两套服务的参数控件都在',
+      !!$id('set-search-lanprint-url') && !!$id('set-search-lanprint-key') && !!$id('set-search-searxng-url') && !!$id('set-search-timeout'));
+    const showLp = () => $id('search-fields-lanprint').style.display !== 'none';
+    const showSx = () => $id('search-fields-searxng').style.display !== 'none';
+    const pick = async (v) => {
+      sel.value = v;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(200);
+    };
+
+    await pick('lanprint');
+    check('L2c 选 lanprint → 只露 lanprint 那组参数', showLp() && !showSx(), { lp: showLp(), sx: showSx() });
+    await pick('searxng');
+    check('L2d 切到 SearxNG → 换成 SearxNG 那组', !showLp() && showSx(), { lp: showLp(), sx: showSx() });
+    await pick('');
+
+    await pick('lanprint');
+    $id('set-search-lanprint-url').value = 'https://jinaapi.lanprint.com';
+    $id('set-search-lanprint-key').value = 'ui-test-key';
+    $id('set-search-searxng-url').value = 'http://127.0.0.1:8888';
+    $id('set-search-timeout').value = '60000';
+    $id('btn-save-tools').click();
+    await wait(700);
+    const w = (await api.settings.get()).web;
+    check('L2e 保存：服务选的是 lanprint', w.searchProvider === 'lanprint', w.searchProvider);
+    check('L2f 保存：两套参数各存各的、互不覆盖',
+      w.lanprint.endpoint === 'https://jinaapi.lanprint.com' && w.lanprint.key === 'ui-test-key' && w.searxng.endpoint === 'http://127.0.0.1:8888',
+      { lp: w.lanprint, sx: w.searxng });
+    check('L2g 保存：超时进了搜索自己那条', Number(w.searchTimeoutMs) === 60000, String(w.searchTimeoutMs));
+    check('L2h 保存：抓页面那条超时没被顺手改掉（那边是 fetchTimeoutMs）', Number(w.fetchTimeoutMs) !== 60000, String(w.fetchTimeoutMs));
+
+    closeSettings();
+    await wait(250);
+    // 还原：别把巡检填的密钥/端点留给后面的用例
+    await api.settings.save({
+      web: {
+        searchProvider: before.searchProvider || '',
+        lanprint: before.lanprint || { endpoint: '', key: '' },
+        searxng: before.searxng || { endpoint: '' },
+        searchTimeoutMs: before.searchTimeoutMs || 90000,
+      },
+    });
+  }
+
   // ============ O. 兜底模型：思考强度可调 + One Harness 专用会话 ============
   prog("O. 兜底模型：思考强度可调 + One Harness 专用会话");
   // 对应三句话：① 思考强度要在「设置 → 兜底模型」里能调；② 自带模型单独一个会话专用，
